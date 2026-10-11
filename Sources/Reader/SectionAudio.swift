@@ -9,6 +9,14 @@ struct DecodedSection {
     let duration: TimeInterval
     /// Real timings from the engine, or estimated from `duration` when it had none.
     let words: [WordTiming]
+
+    /// `words` from the engine, or estimated over the audio when it had none.
+    init(section: ReadingSection, buffer: AVAudioPCMBuffer, words: [WordTiming]) {
+        sectionID = section.id
+        self.buffer = buffer
+        duration = Double(buffer.frameLength) / buffer.format.sampleRate
+        self.words = words.isEmpty ? WordTiming.estimate(text: section.text, duration: duration) : words
+    }
 }
 
 enum SectionDecoderError: LocalizedError {
@@ -58,12 +66,7 @@ enum SectionDecoder {
         }
         guard source.frameLength > 0 else { throw SectionDecoderError.empty }
 
-        let buffer = try convert(source, to: playbackFormat)
-        let duration = Double(buffer.frameLength) / playbackFormat.sampleRate
-        let words = speech.words.isEmpty
-            ? WordTiming.estimate(text: section.text, duration: duration)
-            : speech.words
-        return DecodedSection(sectionID: section.id, buffer: buffer, duration: duration, words: words)
+        return DecodedSection(section: section, buffer: try convert(source, to: playbackFormat), words: speech.words)
     }
 
     /// Resample / downmix / reformat `source` into `format` in one pass.
@@ -93,6 +96,25 @@ enum SectionDecoder {
         if status == .error {
             throw SectionDecoderError.unreadable(convError?.localizedDescription ?? "conversion failed")
         }
+        return out
+    }
+
+    /// One buffer holding `buffers` back to back (all in the same format).
+    static func concatenate(_ buffers: [AVAudioPCMBuffer]) -> AVAudioPCMBuffer? {
+        guard let first = buffers.first else { return nil }
+        if buffers.count == 1 { return first }
+        let total = buffers.reduce(AVAudioFrameCount(0)) { $0 + $1.frameLength }
+        guard let out = AVAudioPCMBuffer(pcmFormat: first.format, frameCapacity: max(total, 1)),
+              let dst = out.floatChannelData else { return nil }
+        var offset = 0
+        for buffer in buffers {
+            guard let src = buffer.floatChannelData else { return nil }
+            for ch in 0..<Int(first.format.channelCount) {
+                dst[ch].advanced(by: offset).update(from: src[ch], count: Int(buffer.frameLength))
+            }
+            offset += Int(buffer.frameLength)
+        }
+        out.frameLength = total
         return out
     }
 

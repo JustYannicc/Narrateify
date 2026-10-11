@@ -63,6 +63,8 @@ enum SpeechEngineKind: String, Codable, CaseIterable, Identifiable {
     }
 
     var isLocal: Bool { self == .supertonic || self == .apple }
+    /// Bills per character and needs an API key.
+    var isCloudPaid: Bool { self == .elevenLabs || self == .openAI }
 }
 
 struct VoiceOption: Codable, Hashable, Identifiable {
@@ -119,11 +121,36 @@ protocol SpeechEngine: AnyObject {
     /// Synthesize one section at 1× speed. Throw `SpeechEngineError` so the
     /// router can fall back.
     func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech
+
+    /// Same, but an engine that can stream also feeds `live` as audio arrives
+    /// so playback starts before synthesis ends. Engines that can't ignore it
+    /// (the default).
+    func synthesize(_ text: String, language: ReadingLanguage, voiceID: String,
+                    live: LiveSpeechSink?) async throws -> SynthesizedSpeech
 }
 
 extension SpeechEngine {
     var unavailableReason: String? { nil }
     func prewarm() {}
+
+    func synthesize(_ text: String, language: ReadingLanguage, voiceID: String,
+                    live: LiveSpeechSink?) async throws -> SynthesizedSpeech {
+        try await synthesize(text, language: language, voiceID: voiceID)
+    }
+}
+
+/// Receives a section's audio while it's still being synthesized. Called from
+/// any thread, in order. A streaming engine must end with exactly one of
+/// `complete()` (right before returning) or `abort()` (before throwing, if it
+/// sent anything) — the reader then either keeps the streamed audio or
+/// restarts the section from whatever engine answered instead.
+protocol LiveSpeechSink: AnyObject, Sendable {
+    /// Next bytes of an MP3 stream (frames may be split across calls).
+    func audio(_ mp3: Data)
+    /// Every word timing known so far (replaces the previous list).
+    func words(_ words: [WordTiming])
+    func complete()
+    func abort()
 }
 
 extension ReadingLanguage {

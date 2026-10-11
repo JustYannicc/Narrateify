@@ -23,15 +23,19 @@ final class ReadingSettings: ObservableObject {
         static let profiles = "readingProfiles.v1"
         static let warm = "keepModelsWarm"
         static let unload = "unloadModelsAfterMinutes"
+        static let plainEdgeVoices = "migratedToPlainEdgeVoices"
     }
 
     init() {
         let d = UserDefaults.standard
-        profiles = d.data(forKey: Keys.profiles)
+        let stored = d.data(forKey: Keys.profiles)
             .flatMap { try? JSONDecoder().decode([LanguageProfile].self, from: $0) }
-            ?? Self.initialLanguages().map(Self.defaultProfile)
+        let migrated = stored.map(Self.migratingToPlainEdgeVoices)
+        profiles = migrated ?? Self.initialLanguages().map(Self.defaultProfile)
+        d.set(true, forKey: Keys.plainEdgeVoices)   // fresh installs start plain already
         keepModelsWarm = d.object(forKey: Keys.warm) as? Bool ?? true
         unloadAfterMinutes = d.object(forKey: Keys.unload) as? Int ?? 10
+        if migrated != stored { persist() }   // didSet doesn't run in init
     }
 
     func profile(for language: ReadingLanguage) -> LanguageProfile {
@@ -90,12 +94,33 @@ final class ReadingSettings: ObservableObject {
         return LanguageProfile(language: language, routes: routes)
     }
 
+    /// Plain (single-language) voices: sections are already split by
+    /// language, and plain voices start faster than the Multilingual ones.
     static let defaultEdgeVoice: [String: String] = [
-        "en-US": "en-US-AvaMultilingualNeural",
+        "en-US": "en-US-AvaNeural",
         "en-GB": "en-GB-SoniaNeural",
-        "de-DE": "de-DE-SeraphinaMultilingualNeural",
-        "fr-FR": "fr-FR-VivienneMultilingualNeural",
+        "de-DE": "de-DE-KatjaNeural",
+        "fr-FR": "fr-FR-DeniseNeural",
         "es-ES": "es-ES-ElviraNeural",
         "it-IT": "it-IT-ElsaNeural",
     ]
+
+    /// The multilingual defaults shipped before 2.0.0 build 6. Once, wherever
+    /// one of these is an Edge route, it becomes that language's plain default
+    /// (even if it was picked by hand). Voices picked after that are left alone.
+    private static let oldDefaultEdgeVoices: Set<String> = [
+        "en-US-AvaMultilingualNeural", "de-DE-SeraphinaMultilingualNeural", "fr-FR-VivienneMultilingualNeural",
+    ]
+
+    private static func migratingToPlainEdgeVoices(_ profiles: [LanguageProfile]) -> [LanguageProfile] {
+        guard !UserDefaults.standard.bool(forKey: Keys.plainEdgeVoices) else { return profiles }
+        return profiles.map { profile in
+            var p = profile
+            for i in p.routes.indices where p.routes[i].engine == .edge
+                && oldDefaultEdgeVoices.contains(p.routes[i].voiceID) {
+                p.routes[i].voiceID = defaultEdgeVoice[p.language.code] ?? p.routes[i].voiceID
+            }
+            return p
+        }
+    }
 }

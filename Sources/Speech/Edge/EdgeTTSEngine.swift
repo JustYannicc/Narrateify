@@ -143,8 +143,38 @@ final class EdgeTTSEngine: SpeechEngine {
     // MARK: Synthesis
 
     func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech {
+        try await synthesize(text, language: language, voiceID: voiceID, live: nil)
+    }
+
+    /// Streams MP3 frames and word timings into `live` as they arrive (first
+    /// audio ~100 ms after the request vs ~500+ ms for the whole sentence).
+    func synthesize(_ text: String, language: ReadingLanguage, voiceID: String,
+                    live: LiveSpeechSink?) async throws -> SynthesizedSpeech {
+        do {
+            let speech = try await turn(text, language: language, voiceID: voiceID, live: live)
+            live?.complete()
+            return speech
+        } catch {
+            live?.abort()
+            throw error
+        }
+    }
+
+    private func turn(_ text: String, language: ReadingLanguage, voiceID: String,
+                      live: LiveSpeechSink?) async throws -> SynthesizedSpeech {
         guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
             throw SpeechEngineError.synthesisFailed("Nothing speakable in section")
+        }
+        var streamed: [EdgeProtocol.Boundary] = []
+        let onChunk: (EdgeConnection.Chunk) -> Void = { chunk in
+            guard let live else { return }
+            switch chunk {
+            case .audio(let mp3):
+                live.audio(mp3)
+            case .boundaries(let new):
+                streamed += new
+                live.words(EdgeWordAligner.align(streamed, in: text))
+            }
         }
         let ssml = EdgeProtocol.ssml(text: text, voiceID: voiceID, languageCode: language.code)
         let timeout = Self.turnTimeout(forTextLength: text.utf16.count)
@@ -156,7 +186,8 @@ final class EdgeTTSEngine: SpeechEngine {
         do {
             do {
                 turn = try await connection.speak(ssml: ssml, timeout: timeout,
-                                                  firstFrameTimeout: source == .fresh ? nil : staleAfter)
+                                                  firstFrameTimeout: source == .fresh ? nil : staleAfter,
+                                                  onChunk: onChunk)
             } catch EdgeConnection.TurnFailure.stale(let error) where source != .fresh {
                 // The kept socket died quietly (sleep, network change, server
                 // close). Nothing was spoken yet, so start over on a fresh one.
@@ -164,7 +195,9 @@ final class EdgeTTSEngine: SpeechEngine {
                 connection.close()
                 connection = try await connect()
                 source = .staleRetry
-                turn = try await connection.speak(ssml: ssml, timeout: timeout, firstFrameTimeout: nil)
+                // Stale means nothing arrived, so nothing was streamed either.
+                turn = try await connection.speak(ssml: ssml, timeout: timeout, firstFrameTimeout: nil,
+                                                  onChunk: onChunk)
             }
         } catch let failure as EdgeConnection.TurnFailure {
             connection.close()

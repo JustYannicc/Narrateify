@@ -1,12 +1,15 @@
 import Foundation
 import Combine
+import OSLog
+
+private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "narration")
 
 /// Plays a narration section by section: synthesizes on demand (see
 /// `SectionPipeline` for the latency rules), highlights the spoken word, and
 /// navigates by section instead of scrubbing a timeline.
 @MainActor
 final class ReadingSession: ObservableObject {
-    typealias Synthesize = (ReadingSection) async throws -> SynthesizedSpeech
+    typealias Synthesize = SectionPipeline.Synthesize
 
     static let prefetchDepth = 2
     /// previous() restarts the current section once this many (wall) seconds in.
@@ -49,6 +52,8 @@ final class ReadingSession: ObservableObject {
     private var active = false
     /// Index currently loaded into the player (nil = nothing loaded).
     private var loadedIndex: Int?
+    /// The loaded section is a stream still arriving (not yet decoded).
+    private var loadedLive: LiveSection?
     private var ticker: Timer?
 
     convenience init(sections: [ReadingSection], synthesize: @escaping Synthesize) {
@@ -69,6 +74,7 @@ final class ReadingSession: ObservableObject {
         player.onSectionEnd = { [weak self] in self?.sectionDidEnd() }
         pipeline.onReady = { [weak self] i in self?.sectionReady(i) }
         pipeline.onFailed = { [weak self] i, err in self?.sectionFailed(i, err) }
+        pipeline.onLiveAudio = { [weak self] i in self?.sectionReady(i) }
     }
 
     var currentSection: ReadingSection? {
@@ -147,6 +153,7 @@ final class ReadingSession: ObservableObject {
         stopTicker()
         player.shutdown()
         loadedIndex = nil
+        loadedLive = nil
         isPlaying = false
         isBuffering = false
     }
@@ -186,6 +193,7 @@ final class ReadingSession: ObservableObject {
         player.stop()
         stopTicker()
         loadedIndex = nil
+        loadedLive = nil
         currentIndex = index
         currentWordRange = nil
         currentSectionNote = notes[sections[index].id]
@@ -193,16 +201,26 @@ final class ReadingSession: ObservableObject {
         pipeline.schedule(playhead: index)
     }
 
+    /// Play the current section: decoded if we have it, else its stream if
+    /// audio is already arriving, else wait (buffering).
     private func playCurrentIfReady() {
-        guard let section = pipeline.decodedSection(at: currentIndex) else {
+        let decoded = pipeline.decodedSection(at: currentIndex)
+        let live = decoded == nil ? pipeline.liveSection(at: currentIndex) : nil
+        guard decoded != nil || live != nil else {
             isBuffering = true
             return
         }
         isBuffering = false
         guard isPlaying else { return }
         do {
-            try player.play(section, from: 0)
+            if let decoded {
+                try player.play(decoded, from: 0)
+            } else if let live {
+                try player.playLive(live)
+            }
             loadedIndex = currentIndex
+            loadedLive = live
+            log.notice("playing section \(self.currentIndex) (\(live != nil ? "streaming" : "decoded", privacy: .public))")
             updateHighlight()
             startTicker()
         } catch {
@@ -211,8 +229,20 @@ final class ReadingSession: ObservableObject {
         }
     }
 
+    /// The current section got audio (streamed or decoded).
     private func sectionReady(_ i: Int) {
-        guard active, i == currentIndex, loadedIndex == nil else { return }
+        guard active, i == currentIndex else { return }
+        if loadedIndex == i {
+            // Streamed audio that broke off mid-way (the engine failed and a
+            // fallback answered): restart the section with the full result.
+            guard let live = loadedLive, live.state == .aborted else { return }
+            player.stop()
+            stopTicker()
+            loadedIndex = nil
+            loadedLive = nil
+        } else if loadedIndex != nil {
+            return
+        }
         playCurrentIfReady()
     }
 
@@ -225,6 +255,7 @@ final class ReadingSession: ObservableObject {
     private func sectionDidEnd() {
         stopTicker()
         loadedIndex = nil
+        loadedLive = nil
         advance()
     }
 
@@ -243,6 +274,7 @@ final class ReadingSession: ObservableObject {
         player.stop()
         pipeline.cancelAll()
         loadedIndex = nil
+        loadedLive = nil
         currentWordRange = nil
         isPlaying = false
         isBuffering = false
@@ -272,8 +304,9 @@ final class ReadingSession: ObservableObject {
     }
 
     private func updateHighlight() {
-        guard let loadedIndex, let section = pipeline.decodedSection(at: loadedIndex) else { return }
-        let range = WordTimeline.index(at: player.position, in: section.words).map { section.words[$0].range }
+        guard let loadedIndex,
+              let words = pipeline.decodedSection(at: loadedIndex)?.words ?? loadedLive?.words else { return }
+        let range = WordTimeline.index(at: player.position, in: words).map { words[$0].range }
         if range != currentWordRange { currentWordRange = range }
     }
 

@@ -45,6 +45,12 @@ final class EdgeConnection: @unchecked Sendable {
         case failed(SpeechEngineError)
     }
 
+    /// Pieces of a turn as they arrive, for streaming playback.
+    enum Chunk {
+        case audio(Data)
+        case boundaries([EdgeProtocol.Boundary])
+    }
+
     struct TurnResult {
         var audio = Data()
         var boundaries: [EdgeProtocol.Boundary] = []
@@ -151,7 +157,9 @@ final class EdgeConnection: @unchecked Sendable {
     /// Speak one SSML document and collect its audio and word boundaries.
     /// - Parameter firstFrameTimeout: for a reused socket, how long to wait for
     ///   the server's first reply (normally ~50 ms) before calling it stale.
-    func speak(ssml: String, timeout: TimeInterval, firstFrameTimeout: TimeInterval?) async throws -> TurnResult {
+    /// - Parameter onChunk: sees each audio/metadata frame as it arrives.
+    func speak(ssml: String, timeout: TimeInterval, firstFrameTimeout: TimeInterval?,
+               onChunk: (Chunk) -> Void = { _ in }) async throws -> TurnResult {
         let (events, continuation) = AsyncStream<Event>.makeStream()
         let alreadyDead: Error? = lock.withLock {
             if failure == nil { sink = { continuation.yield($0) } }
@@ -200,7 +208,7 @@ final class EdgeConnection: @unchecked Sendable {
                             gotFrame.set()
                             result.firstFrame = Date().timeIntervalSince(start)
                         }
-                        if try handle(message, into: &result, start: start) {
+                        if try handle(message, into: &result, start: start, onChunk: onChunk) {
                             result.total = Date().timeIntervalSince(start)
                             return
                         }
@@ -220,13 +228,17 @@ final class EdgeConnection: @unchecked Sendable {
     }
 
     /// Returns true on `turn.end`.
-    private func handle(_ message: URLSessionWebSocketTask.Message, into r: inout TurnResult, start: Date) throws -> Bool {
+    private func handle(_ message: URLSessionWebSocketTask.Message, into r: inout TurnResult, start: Date,
+                        onChunk: (Chunk) -> Void) throws -> Bool {
         switch message {
         case .string(let s):
             let frame = try EdgeProtocol.parseTextFrame(s)
             switch frame.path {
             // A bad metadata frame costs highlights, not the audio.
-            case "audio.metadata": r.boundaries += (try? EdgeProtocol.parseMetadata(frame.body)) ?? []
+            case "audio.metadata":
+                let boundaries = (try? EdgeProtocol.parseMetadata(frame.body)) ?? []
+                r.boundaries += boundaries
+                if !boundaries.isEmpty { onChunk(.boundaries(boundaries)) }
             case "turn.end": return true
             default: break
             }
@@ -235,6 +247,7 @@ final class EdgeConnection: @unchecked Sendable {
             if frame.path == "audio", frame.headers["Content-Type"] == "audio/mpeg", !frame.body.isEmpty {
                 if r.firstAudio == nil { r.firstAudio = Date().timeIntervalSince(start) }
                 r.audio.append(frame.body)
+                onChunk(.audio(frame.body))
             }
         @unknown default:
             break

@@ -515,17 +515,37 @@ final class AppState: ObservableObject {
             voicesStatus = "Enter your API key first."
             return
         }
+        Task { await loadVoices(force: true) }
+    }
+
+    /// Fetch the ElevenLabs voice list into `voices` (also used when a
+    /// language is switched to ElevenLabs before the Cloud tab loaded them).
+    /// Concurrent callers share one request; without `force`, a key that
+    /// already failed isn't retried (every voice row asks on appear).
+    @discardableResult
+    func loadVoices(force: Bool = false) async -> [ElevenLabsClient.Voice] {
+        let key = apiKey
+        guard !key.isEmpty, force || voicesFailedKey != key else { return voices }
+        if let voicesLoad { return await voicesLoad.value }
         voicesStatus = "Loading voices…"
-        Task {
+        let load = Task { () -> [ElevenLabsClient.Voice] in
             do {
                 let fetched = try await ElevenLabsClient.fetchVoices(apiKey: key)
-                self.voices = fetched.sorted { $0.name.lowercased() < $1.name.lowercased() }
-                self.voicesStatus = "\(fetched.count) voices loaded"
+                voices = fetched.sorted { $0.name.lowercased() < $1.name.lowercased() }
+                voicesStatus = "\(fetched.count) voices loaded"
+                voicesFailedKey = nil
             } catch {
-                self.voicesStatus = error.localizedDescription
+                voicesStatus = error.localizedDescription
+                voicesFailedKey = key
             }
+            return voices
         }
+        voicesLoad = load
+        defer { voicesLoad = nil }
+        return await load.value
     }
+    private var voicesLoad: Task<[ElevenLabsClient.Voice], Never>?
+    private var voicesFailedKey: String?
 
     // MARK: History playback
 
@@ -619,7 +639,7 @@ final class AppState: ObservableObject {
             AppleSpeechEngine(),
             ElevenLabsSpeechEngine { [unowned self] in
                 .init(apiKey: apiKey, modelId: modelId, settings: voiceSettings, voices: voices,
-                      defaultVoice: voiceId)
+                      defaultVoice: voiceId, loadVoices: { [unowned self] in await self.loadVoices() })
             },
             OpenAISpeechEngine { [unowned self] in
                 .init(apiKey: openAIKey, model: openAIModel, defaultVoice: openAIVoice)

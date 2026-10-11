@@ -62,7 +62,7 @@ struct ReadingSettingsView: View {
     }
 }
 
-/// One language's fallback chain.
+/// One language: the engine/voice it's read with, then what to fall back to.
 private struct LanguageChainSection: View {
     @Binding var profile: LanguageProfile
     @ObservedObject var narrator: Narrator
@@ -73,7 +73,8 @@ private struct LanguageChainSection: View {
         Section {
             ForEach(profile.routes.indices, id: \.self) { index in
                 RouteRow(route: $profile.routes[index], index: index, count: profile.routes.count,
-                         language: profile.language, narrator: narrator) { action in
+                         language: profile.language, narrator: narrator,
+                         onPickEngine: { setPrimary($0) }) { action in
                     perform(action, at: index)
                 }
             }
@@ -82,7 +83,7 @@ private struct LanguageChainSection: View {
                     ForEach(SpeechEngineKind.allCases.filter { kind in
                         !profile.routes.contains { $0.engine == kind }
                     }) { kind in
-                        Button(kind.label) { add(kind) }
+                        Button(kind.label) { insert(kind, at: profile.routes.count) }
                     }
                 }
                 .fixedSize()
@@ -96,8 +97,20 @@ private struct LanguageChainSection: View {
         } header: {
             Text(profile.language.displayName)
         } footer: {
-            Text("Tried top to bottom. If an online engine is unreachable it's skipped for 10 minutes.")
+            Text("Fallbacks are tried top to bottom when the engine above fails. An unreachable online engine is skipped for 10 minutes.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Read this language with `kind`. If it's already a fallback it swaps to
+    /// the top (keeping its voice); otherwise it's added on top and the old
+    /// engine becomes the first fallback.
+    private func setPrimary(_ kind: SpeechEngineKind) {
+        if let i = profile.routes.firstIndex(where: { $0.engine == kind }) {
+            guard i > 0 else { return }
+            profile.routes.insert(profile.routes.remove(at: i), at: 0)
+        } else {
+            insert(kind, at: 0)
         }
     }
 
@@ -114,22 +127,26 @@ private struct LanguageChainSection: View {
         }
     }
 
-    /// New fallback with a working voice: the language default if there is
-    /// one, else the engine's first voice for this language.
-    private func add(_ kind: SpeechEngineKind) {
+    /// New route with a working voice: the language default if there is one;
+    /// cloud engines keep "" (= the voice picked in Settings → Cloud); anything
+    /// else gets the engine's first voice for this language.
+    private func insert(_ kind: SpeechEngineKind, at index: Int) {
         let language = profile.language
         if let route = ReadingSettings.defaultProfile(language).routes.first(where: { $0.engine == kind }),
            !route.voiceID.isEmpty {
-            profile.routes.append(route)
+            profile.routes.insert(route, at: index)
             return
         }
-        profile.routes.append(VoiceRoute(engine: kind, voiceID: ""))
-        let index = profile.routes.count - 1
+        profile.routes.insert(VoiceRoute(engine: kind, voiceID: ""), at: index)
+        guard !kind.isCloudPaid else { return }
+        let settings = narrator.settings
         Task {
+            // Look the profile up again: it may have been removed meanwhile.
             guard let first = await narrator.voices(kind, language: language).first,
-                  profile.routes.indices.contains(index), profile.routes[index].engine == kind,
-                  profile.routes[index].voiceID.isEmpty else { return }
-            profile.routes[index].voiceID = first.id
+                  let p = settings.profiles.firstIndex(where: { $0.language == language }),
+                  let i = settings.profiles[p].routes.firstIndex(where: { $0.engine == kind }),
+                  settings.profiles[p].routes[i].voiceID.isEmpty else { return }
+            settings.profiles[p].routes[i].voiceID = first.id
         }
     }
 
@@ -151,14 +168,22 @@ private struct RouteRow: View {
     let count: Int
     let language: ReadingLanguage
     @ObservedObject var narrator: Narrator
+    let onPickEngine: (SpeechEngineKind) -> Void
     let perform: (Action) -> Void
     @State private var voices: [VoiceOption] = []
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("\(index + 1).").monospacedDigit().foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(route.engine.label).font(.callout)
+                if index == 0 {
+                    Picker("Read with", selection: Binding(get: { route.engine }, set: onPickEngine)) {
+                        ForEach(SpeechEngineKind.allCases) { Text($0.label).tag($0) }
+                    }
+                    .fixedSize()
+                } else {
+                    Text(index == 1 ? "If that fails: \(route.engine.label)" : "Then: \(route.engine.label)")
+                        .font(.callout)
+                }
                 HealthLabel(health: narrator.health(route.engine, language: language))
             }
             Spacer()
@@ -172,12 +197,14 @@ private struct RouteRow: View {
             .frame(maxWidth: 210)
             Button { narrator.preview(route, language: language) } label: { Image(systemName: "play.circle") }
                 .buttonStyle(.borderless).help("Preview this voice")
-            Button { perform(.moveUp) } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.borderless).disabled(index == 0)
-            Button { perform(.moveDown) } label: { Image(systemName: "chevron.down") }
-                .buttonStyle(.borderless).disabled(index == count - 1)
-            Button(role: .destructive) { perform(.delete) } label: { Image(systemName: "xmark") }
-                .buttonStyle(.borderless).disabled(count == 1)
+            if index > 0 {
+                Button { perform(.moveUp) } label: { Image(systemName: "chevron.up") }
+                    .buttonStyle(.borderless).help(index == 1 ? "Read with this instead" : "Try earlier")
+                Button { perform(.moveDown) } label: { Image(systemName: "chevron.down") }
+                    .buttonStyle(.borderless).disabled(index == count - 1)
+                Button(role: .destructive) { perform(.delete) } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless).help("Remove fallback")
+            }
         }
         .task(id: route.engine) {
             voices = await narrator.voices(route.engine, language: language)
@@ -203,7 +230,7 @@ private struct HealthLabel: View {
 /// Readable name for a saved voice before (or without) the engine's voice list.
 enum VoiceNames {
     static func display(_ route: VoiceRoute) -> String {
-        guard !route.voiceID.isEmpty else { return "Default" }
+        guard !route.voiceID.isEmpty else { return route.engine.isCloudPaid ? "Voice from Cloud tab" : "Default" }
         switch route.engine {
         case .apple:
             return AVSpeechSynthesisVoice(identifier: route.voiceID).map { AppleSpeechEngine.option(for: $0).name }

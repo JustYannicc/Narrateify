@@ -13,6 +13,7 @@ private final class FakePlayer: SectionPlayback {
     var position: TimeInterval = 0
     var onSectionEnd: (() -> Void)?
     private(set) var played: [Int] = []       // section IDs, in play order
+    private(set) var streamed: [Int] = []     // section IDs started while still streaming
     private(set) var paused = false
     private(set) var loaded: Int?
 
@@ -21,6 +22,12 @@ private final class FakePlayer: SectionPlayback {
         played.append(section.sectionID)
         loaded = section.sectionID
         position = time
+        paused = false
+    }
+    func playLive(_ section: LiveSection) throws {
+        streamed.append(section.section.id)
+        loaded = section.section.id
+        position = 0
         paused = false
     }
     func pause() { paused = true }
@@ -37,10 +44,12 @@ private final class GatedSynth {
     private(set) var calls: [Int] = []
     private(set) var cancelled: [Int] = []
     private var pending: [Int: CheckedContinuation<SynthesizedSpeech, Error>] = [:]
+    private var sinks: [Int: LiveSpeechSink] = [:]
 
-    func synthesize(_ section: ReadingSection) async throws -> SynthesizedSpeech {
+    func synthesize(_ section: ReadingSection, live: LiveSpeechSink? = nil) async throws -> SynthesizedSpeech {
         let id = section.id
         calls.append(id)
+        sinks[id] = live
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in pending[id] = cont }
         } onCancel: {
@@ -58,12 +67,32 @@ private final class GatedSynth {
             audio: TestAudio.wav(seconds: seconds), fileExtension: "wav", words: []))
     }
 
+    /// Stream the MP3 fixture into a pending call, like Edge does.
+    func stream(_ id: Int) {
+        sinks[id]?.audio(TestAudio.mp3)
+    }
+
+    /// End a streamed call: the stream completes (or aborts and a fallback
+    /// engine answers with a WAV instead).
+    func finishStream(_ id: Int, aborted: Bool = false) {
+        if aborted {
+            sinks[id]?.abort()
+            complete(id)
+        } else {
+            sinks[id]?.complete()
+            pending.removeValue(forKey: id)?.resume(returning: SynthesizedSpeech(
+                audio: TestAudio.mp3, fileExtension: "mp3", words: []))
+        }
+    }
+
     func fail(_ id: Int) {
         pending.removeValue(forKey: id)?.resume(throwing: SpeechEngineError.serviceUnavailable("test"))
     }
 }
 
 enum TestAudio {
+    static var mp3: Data { Data(base64Encoded: mp3Base64)! }
+
     /// `ffmpeg -f lavfi -i sine=frequency=440:duration=0.5 -ar 24000 -ac 1 -b:a 32k`
     static let mp3Base64 = "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"
 
@@ -118,7 +147,7 @@ final class ReaderSessionTests: XCTestCase {
 
     private func session(_ n: Int) -> ReadingSession {
         let synth = self.synth!
-        return ReadingSession(sections: makeSections(n), synthesize: { try await synth.synthesize($0) },
+        return ReadingSession(sections: makeSections(n), synthesize: { try await synth.synthesize($0, live: $1) },
                               player: player, defaults: defaults)
     }
 
@@ -145,6 +174,35 @@ final class ReaderSessionTests: XCTestCase {
         synth.complete(0)
         try await waitUntil("section 0 plays") { self.player.played == [0] }
         XCTAssertFalse(s.isBuffering)
+    }
+
+    func testStreamedSectionPlaysBeforeSynthesisEnds() async throws {
+        let s = session(2)
+        s.start()
+        try await waitUntil("0 requested") { self.synth.waiting == [0] }
+        synth.stream(0)
+        try await waitUntil("0 plays from the stream") { self.player.streamed == [0] }
+        XCTAssertFalse(s.isBuffering)
+        XCTAssertEqual(player.played, [], "nothing waited for the whole section")
+
+        synth.finishStream(0)
+        try await waitUntil("0 settled") { !s.inFlightIndices.contains(0) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(player.played, [], "a completed stream keeps playing, no restart")
+        player.endSection()
+        XCTAssertEqual(s.currentIndex, 1)
+    }
+
+    func testAbortedStreamRestartsWithFallbackAudio() async throws {
+        let s = session(2)
+        s.start()
+        try await waitUntil("0 requested") { self.synth.waiting == [0] }
+        synth.stream(0)
+        try await waitUntil("0 streaming") { self.player.streamed == [0] }
+
+        synth.finishStream(0, aborted: true)      // Edge died mid-sentence, Supertonic answered
+        try await waitUntil("0 restarted") { self.player.played == [0] }
+        XCTAssertEqual(s.currentIndex, 0)
     }
 
     func testPrefetchIsSequentialAndBounded() async throws {
@@ -403,7 +461,7 @@ final class ReaderPlaybackIntegrationTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "ReaderPlaybackTests")!
         let player = EngineSectionPlayer()
         player.volume = 0                     // renders for real, just silently
-        let session = ReadingSession(sections: [section], synthesize: { _ in speech },
+        let session = ReadingSession(sections: [section], synthesize: { _, _ in speech },
                                      player: player, defaults: defaults)
         session.rate = 2
 
@@ -426,6 +484,37 @@ final class ReaderPlaybackIntegrationTests: XCTestCase {
                              "highlight visited \(Set(locations).count)/\(wordCount) words")
     }
 
+    /// MP3 streamed in four chunks with gaps (the player starves in between):
+    /// playback starts on the first chunk, plays everything, and finishes.
+    func testRealPlaybackOfStarvingStream() async throws {
+        let section = ReadingSection(id: 0, text: "A short tone.", language: .englishUS)
+        let mp3 = TestAudio.mp3
+        let duration = try SectionDecoder.decode(SynthesizedSpeech(audio: mp3, fileExtension: "mp3", words: []),
+                                                 section: section).duration
+        let player = EngineSectionPlayer()
+        player.volume = 0
+        let session = ReadingSession(sections: [section], synthesize: { _, live in
+            let step = mp3.count / 4 + 1
+            for start in stride(from: 0, to: mp3.count, by: step) {
+                live?.audio(mp3.subdata(in: start..<min(start + step, mp3.count)))
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+            live?.complete()
+            return SynthesizedSpeech(audio: mp3, fileExtension: "mp3", words: [])
+        }, player: player, defaults: UserDefaults(suiteName: "ReaderStreamTests")!)
+        session.rate = 1
+
+        let t0 = Date()
+        session.start()
+        try await waitUntil("playing", timeout: 1) { !session.isBuffering }
+        let firstAudio = Date().timeIntervalSince(t0)
+        XCTAssertLessThan(firstAudio, 0.3, "started on the first chunk, not after the whole stream")
+        try await waitUntil("finished", timeout: 3) { session.finished }
+        let elapsed = Date().timeIntervalSince(t0)
+        print("[reader] streamed \(duration)s: first audio \(firstAudio)s, finished after \(elapsed)s")
+        XCTAssertGreaterThan(elapsed, duration * 0.9, "played the whole stream")
+    }
+
     private func waitUntilPlaying(_ s: ReadingSession) async throws {
         s.start()
         try await waitUntil("playing") { !s.isBuffering && s.currentWordRange != nil }
@@ -442,7 +531,7 @@ final class ReaderSnapshotTests: XCTestCase {
             + "The box keeps the spoken word highlighted and glides along as narration moves forward, "
             + "so you always know where you are without hunting through a scrubber."
         let sections = (0..<12).map { ReadingSection(id: $0, text: text, language: .englishUS) }
-        let session = ReadingSession(sections: sections, synthesize: { _ in throw CancellationError() },
+        let session = ReadingSession(sections: sections, synthesize: { _, _ in throw CancellationError() },
                                      player: FakePlayer(), defaults: UserDefaults(suiteName: "ReaderSnapshot")!)
         session.rate = 1.5
         session.setNote("Supertonic · Edge unavailable", for: 2)
@@ -486,5 +575,31 @@ final class ReaderSnapshotTests: XCTestCase {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
         try png.write(to: url)
+    }
+}
+
+final class MP3StreamDecoderTests: XCTestCase {
+    /// Fed in small, frame-splitting chunks, the stream decoder must produce
+    /// the same audio length as decoding the whole file.
+    func testChunkedDecodeMatchesFileDecode() throws {
+        let section = ReadingSection(id: 0, text: "tone", language: .englishUS)
+        let whole = try SectionDecoder.decode(SynthesizedSpeech(audio: TestAudio.mp3, fileExtension: "mp3", words: []),
+                                              section: section)
+        var frames: AVAudioFrameCount = 0
+        var chunks = 0
+        let decoder = MP3StreamDecoder { frames += $0.frameLength; chunks += 1 }
+        let mp3 = TestAudio.mp3
+        var offset = 0
+        while offset < mp3.count {
+            let end = min(offset + 97, mp3.count)
+            decoder.feed(mp3.subdata(in: offset..<end))
+            offset = end
+        }
+        decoder.finish()
+        XCTAssertNil(decoder.failure)
+        XCTAssertGreaterThan(chunks, 3, "audio came out incrementally")
+        let expected = Double(whole.buffer.frameLength)
+        XCTAssertEqual(Double(frames), expected, accuracy: expected * 0.03 + 2400,
+                       "streamed \(frames) frames vs \(Int(expected)) from the file")
     }
 }

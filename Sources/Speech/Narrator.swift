@@ -59,6 +59,7 @@ final class Narrator: ObservableObject {
     func prewarm() {
         ReaderOverlayController.shared.prewarm()
         _ = sectionPlayer   // build the graph; starting it waits for a narration
+        DispatchQueue.global(qos: .utility).async { MP3StreamDecoder.prewarm() }
     }
 
     // MARK: Reading
@@ -75,10 +76,11 @@ final class Narrator: ObservableObject {
         log.notice("read: \(sections.count) sections, languages \(sections.map(\.language.code).joined(separator: ","), privacy: .public)")
 
         weak var sessionRef: ReadingSession?   // weak: the session owns this closure
-        let session = ReadingSession(sections: sections, synthesize: { [weak self] section in
+        let session = ReadingSession(sections: sections, synthesize: { [weak self] section, live in
             guard let self else { throw CancellationError() }
             let t0 = Date()
-            let result = try await self.router.synthesize(section, profile: self.settings.profile(for: section.language))
+            let result = try await self.router.synthesize(section, profile: self.settings.profile(for: section.language),
+                                                          live: live)
             log.notice("section \(section.id) [\(section.language.code, privacy: .public)] → \(result.route.engine.rawValue, privacy: .public)/\(result.route.voiceID, privacy: .public) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms (t+\(Int(Date().timeIntervalSince(started) * 1000)) ms), skipped \(result.failures.map { "\($0.0.engine.rawValue): \($0.1.localizedDescription)" }.joined(separator: "; "), privacy: .public)")
             routeLog.routes[section.id] = result.route
             sessionRef?.setNote(self.note(for: result), for: section.id)
@@ -213,7 +215,7 @@ final class Narrator: ObservableObject {
     /// model loaded only for the benchmark is unloaded again afterwards.
     func benchmark(_ kind: SpeechEngineKind) async -> String {
         guard let engine = router.engine(kind) else { return "Not available" }
-        if kind == .elevenLabs || kind == .openAI { return "Not measured (paid per request)" }
+        if kind.isCloudPaid { return "Not measured (paid per request)" }
         if let reason = engine.unavailableReason { return reason }
         let supertonic = engine as? SupertonicEngine
         let wasLoaded = supertonic?.isLoaded ?? true

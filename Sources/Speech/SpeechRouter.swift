@@ -89,7 +89,9 @@ final class SpeechRouter {
         onHealthChange?(kind, false)
     }
 
-    func synthesize(_ section: ReadingSection, profile: LanguageProfile) async throws -> Result {
+    /// `live` goes to every engine tried; only streaming ones use it.
+    func synthesize(_ section: ReadingSection, profile: LanguageProfile,
+                    live: LiveSpeechSink? = nil) async throws -> Result {
         var failures: [(VoiceRoute, Error)] = []
         let candidates = profile.routes.filter { engines[$0.engine] != nil }
         // If everything is benched, still try the chain rather than fail outright.
@@ -108,7 +110,7 @@ final class SpeechRouter {
                 try Task.checkCancellation()
                 let speech = try await engine.synthesize(section.text,
                                                          language: section.language,
-                                                         voiceID: route.voiceID)
+                                                         voiceID: route.voiceID, live: live)
                 if benchedUntil.removeValue(forKey: route.engine) != nil {
                     onHealthChange?(route.engine, true)
                 }

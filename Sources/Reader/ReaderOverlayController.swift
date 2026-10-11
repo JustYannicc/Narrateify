@@ -29,7 +29,7 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
     /// thread before audio can start.
     func prewarm() {
         let panel = ensurePanel()
-        let dummy = ReadingSession(sections: [], synthesize: { _ in throw CancellationError() },
+        let dummy = ReadingSession(sections: [], synthesize: { _, _ in throw CancellationError() },
                                    player: SilentSectionPlayer(), defaults: .standard)
         let view = makeHostingView(for: dummy)
         view.layoutSubtreeIfNeeded()

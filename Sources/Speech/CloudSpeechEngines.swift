@@ -16,6 +16,8 @@ final class ElevenLabsSpeechEngine: SpeechEngine {
         var voices: [ElevenLabsClient.Voice]
         /// Used when a route has no voice picked yet.
         var defaultVoice: String
+        /// Fetches `voices` when Settings → Cloud hasn't yet.
+        var loadVoices: @MainActor () async -> [ElevenLabsClient.Voice]
     }
     private let config: @MainActor () -> Config
 
@@ -28,8 +30,13 @@ final class ElevenLabsSpeechEngine: SpeechEngine {
         MainActor.assumeIsolated { config().apiKey.isEmpty } ? "Add an API key in Settings → Cloud" : nil
     }
 
+    /// Loads the list on demand, so picking ElevenLabs for a language works
+    /// without visiting Settings → Cloud first.
+    @MainActor
     func voices(for language: ReadingLanguage) async -> [VoiceOption] {
-        await MainActor.run { config() }.voices.map { VoiceOption(id: $0.voiceId, name: $0.name, languages: ["*"]) }
+        let c = config()
+        let list = c.voices.isEmpty && !c.apiKey.isEmpty ? await c.loadVoices() : c.voices
+        return list.map { VoiceOption(id: $0.voiceId, name: $0.name, languages: ["*"]) }
     }
 
     func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech {
