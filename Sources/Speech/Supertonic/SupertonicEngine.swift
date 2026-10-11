@@ -1,6 +1,7 @@
 import Foundation
 
 /// Denoising steps per utterance. More steps = cleaner audio, linearly slower.
+/// Below 5 steps the output measurably clips and carries residual noise.
 enum SupertonicQuality: Int, CaseIterable, Codable, Identifiable {
     case fastest = 2
     case fast = 3
@@ -19,12 +20,16 @@ enum SupertonicQuality: Int, CaseIterable, Codable, Identifiable {
         }
     }
 
-    static let `default`: SupertonicQuality = .balanced
+    /// 8 steps is upstream's default and audibly cleanest (fewer than 5 steps
+    /// leave clipping/hiss). With the Core ML decoder it still costs only
+    /// ~95 ms for a 60-char sentence on M5 Pro (ONNX fallback: ~590 ms).
+    static let `default`: SupertonicQuality = .best
 }
 
-/// Local Supertonic 3 TTS via ONNX Runtime. Models load lazily on the first
-/// `synthesize` (or `preload()`) and stay warm until `unload()` or the optional
-/// idle timeout. All inference runs serially on a private background queue.
+/// Local Supertonic 3 TTS (ONNX Runtime + Core ML, see `SupertonicBackend`).
+/// Models load lazily on the first `synthesize` (or `preload()`) and stay warm
+/// until `unload()` or the optional idle timeout. All inference runs serially
+/// on a private background queue.
 final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
     let kind: SpeechEngineKind = .supertonic
 
@@ -40,11 +45,14 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
     static let defaultVoiceID = "F1"
 
     let modelDirectory: URL
+    /// nil = pick per load: Core ML when its files are installed and the OS
+    /// supports it, else ONNX (see `SupertonicBackend.installed`).
+    private let forcedBackend: SupertonicBackend?
     private let queue = DispatchQueue(label: "Narrateify.Supertonic", qos: .userInitiated)
     private let lock = NSLock()
     private var _quality: SupertonicQuality
     private var _idleUnloadAfter: TimeInterval?
-    private var _isLoaded = false
+    private var _loadedBackend: SupertonicBackend?
 
     // Queue-confined state.
     private var runtime: SupertonicRuntime?
@@ -53,8 +61,10 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
 
     init(modelDirectory: URL = SupertonicModelStore.defaultDirectory,
          quality: SupertonicQuality = .default,
-         idleUnloadAfter: TimeInterval? = nil) {
+         idleUnloadAfter: TimeInterval? = nil,
+         backend: SupertonicBackend? = nil) {
         self.modelDirectory = modelDirectory
+        forcedBackend = backend
         _quality = quality
         _idleUnloadAfter = idleUnloadAfter
     }
@@ -75,7 +85,11 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
     }
 
     /// Whether the ONNX sessions are currently in memory.
-    var isLoaded: Bool { lock.withLock { _isLoaded } }
+    var isLoaded: Bool { loadedBackend != nil }
+
+    /// Backend of the models in memory (nil = not loaded). After
+    /// `SupertonicModelStore.upgrade()` finishes, `unload()` if this is `.onnx`.
+    var loadedBackend: SupertonicBackend? { lock.withLock { _loadedBackend } }
 
     // MARK: SpeechEngine
 
@@ -130,9 +144,11 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
     private func loadedRuntime() throws -> SupertonicRuntime {
         if let runtime { return runtime }
         do {
-            let loaded = try SupertonicRuntime(directory: modelDirectory)
+            let loaded = try SupertonicRuntime(
+                directory: modelDirectory,
+                backend: forcedBackend ?? SupertonicBackend.installed(at: modelDirectory) ?? .current)
             runtime = loaded
-            lock.withLock { _isLoaded = true }
+            lock.withLock { _loadedBackend = loaded.backend }
             return loaded
         } catch let error as SpeechEngineError {
             throw error
@@ -160,7 +176,7 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
         idleTimer = nil
         styles = [:]
         runtime = nil
-        lock.withLock { _isLoaded = false }
+        lock.withLock { _loadedBackend = nil }
     }
 
     private func scheduleIdleUnload() {

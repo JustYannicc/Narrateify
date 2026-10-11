@@ -4,7 +4,7 @@ import XCTest
 /// Supertonic 3 engine tests. The logic tests always run; anything touching
 /// the real model skips unless it's installed at the default location.
 /// Set TEST_RUNNER_NARRATEIFY_SUPERTONIC_DOWNLOAD=1 to let `testStoreDownloadsModel`
-/// fetch the ~401 MB model when it's missing.
+/// fetch the model (~220 MB Core ML layout) when it's missing.
 final class SupertonicTests: XCTestCase {
 
     // MARK: Text
@@ -76,9 +76,13 @@ final class SupertonicTests: XCTestCase {
         XCTAssertEqual(wav[24..<28].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }, 44_100)
     }
 
-    func testManifestCoversEveryModelFile() {
-        XCTAssertEqual(Set(SupertonicManifest.files.map(\.path)), Set(SupertonicFiles.all))
-        XCTAssertEqual(SupertonicManifest.totalBytes, 401_276_744)
+    func testManifestPerBackend() {
+        let common = Set(SupertonicManifest.common.map(\.path))
+        XCTAssertTrue(common.isSuperset(of: SupertonicFiles.voiceIDs.map(SupertonicFiles.voiceStyle)))
+        XCTAssertEqual(SupertonicManifest.totalBytes(for: .onnx), 401_276_744)
+        XCTAssertEqual(SupertonicManifest.totalBytes(for: .coreML), 222_090_203)
+        XCTAssertTrue(SupertonicManifest.coreMLDecoder.allSatisfy { $0.url.absoluteString.contains("FluidInference") })
+        XCTAssertEqual(Set(SupertonicManifest.files(for: .coreML).map(\.path)).count, 22)
     }
 
     // MARK: Real model
@@ -86,7 +90,7 @@ final class SupertonicTests: XCTestCase {
     private var installedDir: URL { SupertonicModelStore.defaultDirectory }
 
     private func requireModel() throws {
-        try XCTSkipUnless(SupertonicManifest.isComplete(at: installedDir), "Supertonic 3 not installed")
+        try XCTSkipUnless(SupertonicManifest.isComplete(at: installedDir, backend: .current), "Supertonic 3 not installed")
     }
 
     @MainActor
@@ -98,7 +102,7 @@ final class SupertonicTests: XCTestCase {
             try await store.installAndWait()
         }
         XCTAssertEqual(store.state, .installed)
-        XCTAssertGreaterThan(store.diskUsage, 390_000_000)
+        XCTAssertGreaterThan(store.diskUsage, SupertonicModelStore.downloadSize * 9 / 10)
     }
 
     /// Staged files from a previous run are reused (no network) and the
@@ -118,11 +122,51 @@ final class SupertonicTests: XCTestCase {
         try await store.installAndWait()
         XCTAssertEqual(store.state, .installed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
-        XCTAssertTrue(SupertonicManifest.isComplete(at: dir))
+        XCTAssertTrue(SupertonicManifest.isComplete(at: dir, backend: .current))
 
         try store.uninstall()
         XCTAssertEqual(store.state, .notInstalled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    /// Size-correct sparse placeholders: enough for the manifest's size checks.
+    private func fakeFiles(_ files: [SupertonicManifest.File], in dir: URL) throws {
+        for file in files {
+            let url = dir.appendingPathComponent(file.path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let h = try FileHandle(forWritingTo: url)
+            try h.truncate(atOffset: UInt64(file.size))
+            try h.close()
+        }
+    }
+
+    /// An ONNX-only install stays usable, offers an upgrade, and the upgrade
+    /// reuses the shared files and swaps the Core ML layout in.
+    @MainActor
+    func testONNXInstallStaysInstalledAndUpgrades() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("supertonic-3")
+        try fakeFiles(SupertonicManifest.files(for: .onnx), in: dir)
+        // Pretend the Core ML files were already fetched, so no network is needed.
+        try fakeFiles(SupertonicManifest.coreMLDecoder, in: root.appendingPathComponent(".supertonic-3.partial"))
+
+        let store = SupertonicModelStore(directory: dir, backend: .coreML)
+        XCTAssertEqual(store.state, .installed)
+        XCTAssertEqual(store.installedBackend, .onnx)
+        XCTAssertTrue(store.isInstalled)
+        XCTAssertTrue(store.upgradeAvailable)
+        XCTAssertEqual(SupertonicBackend.installed(at: dir, preferred: .coreML), .onnx)
+
+        store.upgrade()
+        try await store.installAndWait()
+        XCTAssertEqual(store.state, .installed)
+        XCTAssertEqual(store.installedBackend, .coreML)
+        XCTAssertFalse(store.upgradeAvailable)
+        XCTAssertEqual(SupertonicBackend.installed(at: dir, preferred: .coreML), .coreML)
+        XCTAssertNil(SupertonicBackend.installed(at: dir, preferred: .onnx), "old ONNX decoder removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".supertonic-3.partial").path))
     }
 
     func testSynthesizesEnglishAndGerman() async throws {
@@ -144,6 +188,7 @@ final class SupertonicTests: XCTestCase {
             try speech.audio.write(to: out.appendingPathComponent("test-\(lang.base)-\(voice).wav"))
         }
         XCTAssertTrue(engine.isLoaded)
+        XCTAssertEqual(engine.loadedBackend, SupertonicBackend.installed(at: installedDir))
         engine.unload()
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertFalse(engine.isLoaded)
