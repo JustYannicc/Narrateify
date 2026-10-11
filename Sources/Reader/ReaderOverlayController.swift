@@ -23,6 +23,18 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    /// Build the panel and SwiftUI view graph ahead of time (at launch) so the
+    /// first narration doesn't pay ~100 ms of view construction on the main
+    /// thread before audio can start.
+    func prewarm() {
+        let panel = ensurePanel()
+        let dummy = ReadingSession(sections: [], synthesize: { _ in throw CancellationError() },
+                                   player: SilentSectionPlayer(), defaults: .standard)
+        let view = makeHostingView(for: dummy)
+        view.layoutSubtreeIfNeeded()
+        _ = panel
+    }
+
     /// Show `session` (replacing any previous one's view). Doesn't start it.
     func show(_ session: ReadingSession) {
         self.session = session

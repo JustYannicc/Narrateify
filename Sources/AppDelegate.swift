@@ -40,7 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `-narrateText "…"` reads text on launch — lets the full pipeline be
         // exercised without Accessibility permission or a hotkey.
         if let text = UserDefaults.standard.string(forKey: "narrateText"), !text.isEmpty {
-            Task { @MainActor in AppState.shared.narrate(text) }
+            // `-narrateDelay 5` waits first, to measure warm (post-preload) latency.
+            let delay = UserDefaults.standard.double(forKey: "narrateDelay")
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(delay))
+                AppState.shared.narrate(text)
+            }
         }
         Task { @MainActor in SettingsSnapshot.runIfRequested(state: AppState.shared) }
         #endif

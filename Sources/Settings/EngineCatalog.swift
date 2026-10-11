@@ -26,7 +26,7 @@ enum EngineCatalog {
         EngineCard(kind: .supertonic, speed: 9, quality: 7, ram: SupertonicFigures.ram, disk: SupertonicFigures.disk,
                    languages: "31 (incl. EN, DE)",
                    privacy: "Fully on-device",
-                   blurb: "Supertone's on-device model (the one in Read Aloud). Runs on the CPU via ONNX Runtime — no Python, no GPU. The best local fallback for Edge."),
+                   blurb: "Supertone's on-device model (the one in Read Aloud). Core ML + ONNX Runtime on the CPU — no Python, no GPU; ~100–150 ms per sentence on Apple silicon. The best local fallback for Edge."),
         EngineCard(kind: .apple, speed: 10, quality: 5, ram: "~0 (system)", disk: "0–500 MB per voice",
                    languages: "Depends on installed voices",
                    privacy: "Fully on-device",
@@ -46,6 +46,6 @@ enum EngineCatalog {
 
 /// Filled in from on-device measurement of the Supertonic engine.
 enum SupertonicFigures {
-    static let ram = "~400 MB while loaded, 0 when unloaded"
-    static let disk = "~400 MB"
+    static let ram = "~120 MB while loaded (Core ML), ~0 unloaded"
+    static let disk = "~220 MB (macOS 15+), ~400 MB on 14"
 }

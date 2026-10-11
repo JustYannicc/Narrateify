@@ -25,6 +25,9 @@ final class Narrator: ObservableObject {
     var onStatus: ((String) -> Void)?
 
     private var previewPlayer: AVAudioPlayer?
+    /// One audio engine for every narration: building and starting a fresh
+    /// AVAudioEngine per keypress cost ~50 ms before the first word.
+    private lazy var sectionPlayer = EngineSectionPlayer()
 
     /// Which route produced each section of one narration (per session, so a
     /// late history save never mixes narrations).
@@ -41,18 +44,26 @@ final class Narrator: ObservableObject {
 
     var isActive: Bool { session != nil }
 
+    /// Launch-time warm-up of the reader UI and audio engine.
+    func prewarm() {
+        ReaderOverlayController.shared.prewarm()
+        _ = sectionPlayer   // build the graph; starting it waits for a narration
+
+    }
+
     // MARK: Reading
 
     func read(_ text: String, showOverlay: Bool = true) {
+        let started = Date()
         stop()
         let sections = ReadingPlanner.plan(text, languages: settings.languages)
+        let planned = Date()
         guard !sections.isEmpty else { return }
         let routeLog = RouteLog()
-        let started = Date()
         log.notice("read: \(sections.count) sections, languages \(sections.map(\.language.code).joined(separator: ","), privacy: .public)")
 
         var sessionRef: ReadingSession?
-        let session = ReadingSession(sections: sections) { [weak self] section in
+        let session = ReadingSession(sections: sections, synthesize: { [weak self] section in
             guard let self else { throw CancellationError() }
             let t0 = Date()
             let result = try await self.router.synthesize(section, profile: self.settings.profile(for: section.language))
@@ -60,15 +71,24 @@ final class Narrator: ObservableObject {
             routeLog.routes[section.id] = result.route
             sessionRef?.setNote(self.note(for: result), for: section.id)
             return result.speech
-        }
+        }, player: sectionPlayer, defaults: .standard)
         sessionRef = session
         session.onFinished = { [weak self, weak session] in
             guard let self, let session else { return }
             self.finish(session, text: text, log: routeLog)
         }
         self.session = session
-        if showOverlay { ReaderOverlayController.shared.show(session) }
+        // Kick off synthesis first; the overlay is built on the next main-queue
+        // turn, after section 0's job has already hopped to its engine.
         session.start()
+        let kicked = Date()
+        if showOverlay {
+            DispatchQueue.main.async { [weak session] in
+                guard let session, self.session === session else { return }
+                ReaderOverlayController.shared.show(session)
+            }
+        }
+        log.notice("timing: plan \(Int(planned.timeIntervalSince(started) * 1000)) ms, start \(Int(kicked.timeIntervalSince(planned) * 1000)) ms")
         onStatus?("Reading…")
     }
 
@@ -97,6 +117,7 @@ final class Narrator: ObservableObject {
         if self.session === session {
             self.session = nil
             ReaderOverlayController.shared.hide()
+            sectionPlayer.shutdown()   // release the audio hardware while idle
         }
         onStatus?("Finished")
         onFinished?()

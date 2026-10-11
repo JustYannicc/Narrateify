@@ -190,3 +190,17 @@ final class EngineSectionPlayer: SectionPlayback {
         }
     }
 }
+
+/// No-op player for building views that never play (overlay prewarm).
+@MainActor
+final class SilentSectionPlayer: SectionPlayback {
+    var rate: Float = 1
+    var position: TimeInterval { 0 }
+    var onSectionEnd: (() -> Void)?
+    func prepare() {}
+    func play(_ section: DecodedSection, from time: TimeInterval) throws {}
+    func pause() {}
+    func resume() {}
+    func stop() {}
+    func shutdown() {}
+}

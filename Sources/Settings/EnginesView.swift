@@ -124,14 +124,18 @@ private struct SupertonicControls: View {
                 Spacer()
                 Button("Download (\(MemoryFootprint.format(SupertonicModelStore.downloadSize)))") { store.install() }
             case .downloading(let progress):
+                if store.installedBackend != nil { Text("Upgrading to Core ML").foregroundStyle(.secondary) }
                 ProgressView(value: progress).frame(maxWidth: 220)
                 Text("\(Int(progress * 100))%").monospacedDigit().foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.cancel() }
             case .installed:
-                Label(state.supertonicEngine.isLoaded ? "Loaded in memory" : "Downloaded · loads on first use",
-                      systemImage: "checkmark.circle.fill")
+                Label(supertonicStatus, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                if store.upgradeAvailable {
+                    Button("Upgrade (faster)") { store.upgrade() }
+                        .help(store.upgradeError ?? "Download the Core ML decoder: ~6× faster, ~¼ the memory")
+                }
                 Spacer()
                 Text(MemoryFootprint.format(store.diskUsage)).foregroundStyle(.secondary)
                 Button("Remove", role: .destructive) {
@@ -143,6 +147,17 @@ private struct SupertonicControls: View {
                 Spacer()
                 Button("Retry") { store.install() }
             }
+        }
+    }
+}
+
+private extension SupertonicControls {
+    var supertonicStatus: String {
+        let backend = state.supertonic.installedBackend == .coreML ? "Core ML" : "ONNX"
+        switch state.supertonicEngine.loadedBackend {
+        case .coreML?: return "Loaded · Core ML"
+        case .onnx?:   return "Loaded · ONNX"
+        case nil:      return "Downloaded (\(backend)) · loads on first use"
         }
     }
 }

@@ -200,6 +200,13 @@ final class AppState: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        supertonic.$installedBackend
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.supertonicInstallChanged() }
+            .store(in: &cancellables)
+
         // Re-apply the local-model memory policy whenever Reading settings change.
         narrator.settings.objectWillChange
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
@@ -608,6 +615,19 @@ final class AppState: ObservableObject {
     /// Launch-time warm-up so the first shortcut press reads immediately.
     func warmUpEngines() {
         Task { await EdgeVoiceCatalog.shared.refresh() }
+        // Existing ONNX installs move to the much faster Core ML decoder in the
+        // background; ONNX keeps reading meanwhile.
+        if supertonic.upgradeAvailable { supertonic.upgrade() }
+        applyModelMemoryPolicy()
+        narrator.prewarm()
+    }
+
+    /// After an upgrade lands, drop the ONNX runtime so the next read loads
+    /// Core ML (~0.4 s), then re-apply the preload policy.
+    private func supertonicInstallChanged() {
+        if supertonic.installedBackend == .coreML, supertonicEngine.loadedBackend == .onnx {
+            supertonicEngine.unload()
+        }
         applyModelMemoryPolicy()
     }
 

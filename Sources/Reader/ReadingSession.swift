@@ -83,8 +83,15 @@ final class ReadingSession: ObservableObject {
         active = true
         isPlaying = true
         finished = false
-        player.prepare()           // warm the engine while section 0 synthesizes
         go(to: currentIndex, explicit: true)
+        // Start the audio engine on the next main-queue turn: section 0's
+        // synthesis job is queued first, so engine start-up (~50–70 ms)
+        // overlaps synthesis instead of delaying it. play() starts it anyway
+        // if this hasn't run yet.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.active else { return }
+            self.player.prepare()
+        }
     }
 
     func togglePlayPause() {
