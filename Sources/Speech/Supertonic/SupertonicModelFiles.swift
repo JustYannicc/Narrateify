@@ -12,8 +12,10 @@ enum SupertonicBackend: Equatable {
 
     /// The best backend this OS can run.
     static var current: SupertonicBackend {
+        #if arch(arm64)
         if #available(macOS 15, *) { return .coreML }
-        return .onnx
+        #endif
+        return .onnx   // Intel has no Neural Engine, fp16 Core ML would just be slow there
     }
 
     /// The backend a complete install at `directory` supports, preferring

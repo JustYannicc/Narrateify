@@ -146,8 +146,13 @@ final class SupertonicCoreMLDecoder: SupertonicDecoder {
             let p = a.dataPointer.bindMemory(to: Float.self, capacity: n * stride)
             return (0..<n).map { p[$0 * stride] }
         case .float16:
+            #if arch(arm64)
             let p = a.dataPointer.bindMemory(to: Float16.self, capacity: n * stride)
             return (0..<n).map { Float(p[$0 * stride]) }
+            #else
+            // No Float16 on Intel. Unreachable there anyway (Intel uses ONNX), just has to compile.
+            return (0..<n).map { a[$0 * stride].floatValue }
+            #endif
         default:
             throw SpeechEngineError.synthesisFailed("Unexpected Core ML output type")
         }
