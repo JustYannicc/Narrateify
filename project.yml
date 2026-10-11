@@ -10,6 +10,11 @@ options:
     - tr
     - Base
 
+packages:
+  OnnxRuntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
+    exactVersion: 1.24.2
+
 targets:
   Narrateify:
     type: application
@@ -17,6 +22,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources
+    dependencies:
+      - package: OnnxRuntime
+        product: onnxruntime
     info:
       path: Info.plist
       properties:
