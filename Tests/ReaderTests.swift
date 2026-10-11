@@ -394,9 +394,9 @@ final class ReaderPlaybackIntegrationTests: XCTestCase {
     func testRealPlaybackAtDoubleSpeed() async throws {
         let text = "The quick brown fox jumps over the lazy dog, while the reader keeps up with every single word it hears."
         let section = ReadingSection(id: 0, text: text, language: .englishUS)
-        let wav = try await AppleTTSClient(voiceIdentifier: AppleTTSClient.defaultVoiceIdentifier(), speed: 1)
-            .synthesize(text: text)
-        let speech = SynthesizedSpeech(audio: wav, fileExtension: "wav", words: [])
+        // Real Apple voice with its real word marks.
+        let speech = try await AppleSpeechEngine().synthesize(
+            text, language: .englishUS, voiceID: AppleSpeechEngine.defaultVoice(for: .englishUS) ?? "")
         let duration = try SectionDecoder.decode(speech, section: section).duration
         XCTAssertGreaterThan(duration, 2)
 

@@ -42,10 +42,6 @@ struct MenuContent: View {
             }
             .keyboardShortcut("n", modifiers: [.control, .option])
 
-            Button { state.readClipboardHighlighted() } label: {
-                Label("Read Clipboard (Highlighted)", systemImage: "text.line.first.and.arrowtriangle.forward")
-            }
-
             Button { state.narrateFile() } label: {
                 Label("Narrate File…", systemImage: "doc.text")
             }
@@ -60,7 +56,7 @@ struct MenuContent: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .keyboardShortcut("x", modifiers: [.control, .option])
-            .disabled(!state.audio.hasAudio)
+            .disabled(!state.audio.hasAudio && !state.isReading)
 
             Divider().padding(.vertical, 2)
 

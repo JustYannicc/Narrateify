@@ -32,17 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in OnboardingWindow.showIfNeeded() }
         }
 
-        // If the last narration used an installed local model, bring its server
-        // up now so it's ready to narrate immediately.
-        Task { @MainActor in AppState.shared.autoStartLastServerIfNeeded() }
+        // Warm the engines (Edge voice list, Supertonic model if kept loaded)
+        // so the first shortcut press reads immediately.
+        Task { @MainActor in AppState.shared.warmUpEngines() }
+
+        #if DEBUG
+        // `-narrateText "…"` reads text on launch — lets the full pipeline be
+        // exercised without Accessibility permission or a hotkey.
+        if let text = UserDefaults.standard.string(forKey: "narrateText"), !text.isEmpty {
+            Task { @MainActor in AppState.shared.narrate(text) }
+        }
+        #endif
 
         // Quietly check GitHub for a newer release in the background.
         Task { @MainActor in await AppState.shared.updateChecker.check() }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        // Don't leave orphaned local-server processes behind.
-        MainActor.assumeIsolated { AppState.shared.shutdownServers() }
     }
 
     private func registerHotKeys() {

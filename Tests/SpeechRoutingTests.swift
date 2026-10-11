@@ -48,6 +48,12 @@ final class ReadingPlannerTests: XCTestCase {
                        long.filter { !$0.isWhitespace })
     }
 
+    func testFirstSentenceIsSplitOffForFastStart() {
+        let sections = ReadingPlanner.sectionTexts("Here is a quick test of the reader. It reads one section at a time and highlights each word.")
+        XCTAssertEqual(sections.first, "Here is a quick test of the reader.")
+        XCTAssertEqual(sections.count, 2)
+    }
+
     func testParagraphsNeverMergeAcrossLines() {
         let sections = ReadingPlanner.sectionTexts("Short heading\nAnother short line")
         XCTAssertEqual(sections, ["Short heading", "Another short line"])

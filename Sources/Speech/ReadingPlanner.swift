@@ -17,7 +17,9 @@ enum ReadingPlanner {
         /// Sentences longer than this get split at clause/word boundaries.
         var maxSectionLength = 280
         /// The very first section is capped tighter so audio starts sooner.
-        var maxFirstSectionLength = 160
+        var maxFirstSectionLength = 120
+        /// A first sentence at least this long is read on its own.
+        var minFirstSplitLength = 20
         /// Below this length a section's own detection isn't trusted.
         var minDetectLength = 24
         /// Minimum probability for a section to override the document language.
@@ -99,7 +101,15 @@ enum ReadingPlanner {
             }
         }
 
-        // Shorter first section → faster time-to-first-audio.
+        // Shorter first section → faster time-to-first-audio: synthesis time
+        // scales with length, so a merged pair of sentences gets its first
+        // sentence split off when that sentence is long enough to stand alone.
+        if let first = result.first, first.count > options.minFirstSplitLength * 2 {
+            let parts = sentences(in: first)
+            if parts.count > 1, parts[0].count >= options.minFirstSplitLength {
+                result.replaceSubrange(0...0, with: [parts[0], parts.dropFirst().joined(separator: " ")])
+            }
+        }
         if let first = result.first, first.count > options.maxFirstSectionLength {
             let head = split(first, maxLength: options.maxFirstSectionLength)
             result.replaceSubrange(0...0, with: head)

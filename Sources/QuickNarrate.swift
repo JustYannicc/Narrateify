@@ -99,7 +99,7 @@ private struct QuickNarrateView: View {
                 Label(title, systemImage: "text.bubble")
                     .font(.headline)
                 Spacer()
-                Text(state.provider.label)
+                Text(state.narrator.settings.languages.map(\.displayName).joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -134,15 +134,6 @@ private struct QuickNarrateView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    guard !trimmed.isEmpty else { return }
-                    state.readAloudHighlighted(trimmed)
-                    onClose()
-                } label: {
-                    Label("Read", systemImage: "text.line.first.and.arrowtriangle.forward")
-                }
-                .help("Read aloud with word highlighting (Apple voice)")
-                .disabled(trimmed.isEmpty)
                 Button("Narrate") { narrate() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)

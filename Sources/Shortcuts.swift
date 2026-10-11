@@ -106,6 +106,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case narrateClipboard
     case quickNarrate
     case togglePlayback
+    case previousSection
+    case nextSection
+    case faster
+    case slower
     case stop
 
     var id: String { rawValue }
@@ -117,6 +121,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .narrateClipboard:  return "Narrate clipboard"
         case .quickNarrate:      return "Quick Narrate window"
         case .togglePlayback:    return "Play / pause"
+        case .previousSection:   return "Previous section"
+        case .nextSection:       return "Next section"
+        case .faster:            return "Read faster"
+        case .slower:            return "Read slower"
         case .stop:              return "Stop playback"
         }
     }
@@ -130,6 +138,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .narrateClipboard:  return Shortcut(keyCode: UInt32(kVK_ANSI_V), carbonModifiers: mods)
         case .quickNarrate:      return Shortcut(keyCode: UInt32(kVK_ANSI_N), carbonModifiers: mods)
         case .togglePlayback:    return Shortcut(keyCode: UInt32(kVK_Space), carbonModifiers: mods)
+        case .previousSection:   return Shortcut(keyCode: UInt32(kVK_LeftArrow), carbonModifiers: mods)
+        case .nextSection:       return Shortcut(keyCode: UInt32(kVK_RightArrow), carbonModifiers: mods)
+        case .faster:            return Shortcut(keyCode: UInt32(kVK_UpArrow), carbonModifiers: mods)
+        case .slower:            return Shortcut(keyCode: UInt32(kVK_DownArrow), carbonModifiers: mods)
         case .stop:              return Shortcut(keyCode: UInt32(kVK_ANSI_X), carbonModifiers: mods)
         }
     }
@@ -143,7 +155,11 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .narrateScreenshot: AppState.shared.narrateScreenshot()
         case .narrateClipboard:  AppState.shared.narrateClipboard()
         case .quickNarrate:      AppState.shared.showQuickNarrate()
-        case .togglePlayback:    AppState.shared.audio.togglePlayPause()
+        case .togglePlayback:    AppState.shared.togglePlayback()
+        case .previousSection:   AppState.shared.narrator.session?.previous()
+        case .nextSection:       AppState.shared.narrator.session?.next()
+        case .faster:            AppState.shared.narrator.session?.faster()
+        case .slower:            AppState.shared.narrator.session?.slower()
         case .stop:              AppState.shared.stop()
         }
     }
