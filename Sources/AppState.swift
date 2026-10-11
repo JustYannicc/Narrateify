@@ -251,6 +251,7 @@ final class AppState: ObservableObject {
     // MARK: Triggers
 
     func narrateSelection() {
+        narrator.prewarmEngines()   // overlaps text capture
         status = "Reading selection…"
         // The selection grab copies (and restores) the clipboard; keep the
         // clipboard watcher from reacting to that.
@@ -269,6 +270,7 @@ final class AppState: ObservableObject {
     }
 
     func narrateScreenshot() {
+        narrator.prewarmEngines()   // overlaps text capture
         status = "Select a region…"
         ScreenshotOCR.captureAndRecognize { [weak self] text in
             guard let self else { return }
@@ -290,6 +292,7 @@ final class AppState: ObservableObject {
     }
 
     func narrateClipboard() {
+        narrator.prewarmEngines()   // overlaps text capture
         let text = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else {

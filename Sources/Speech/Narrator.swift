@@ -160,6 +160,17 @@ final class Narrator: ObservableObject {
 
     func isBenched(_ kind: SpeechEngineKind) -> Bool { router.isBenched(kind) }
 
+    /// A read is about to start: warm the engine each language would use first
+    /// (Edge opens its WebSocket — ~200 ms saved off the first section).
+    func prewarmEngines() {
+        var warmed = Set<SpeechEngineKind>()
+        for profile in settings.profiles {
+            guard let route = profile.routes.first(where: { router.isUsable($0.engine, for: profile.language) }),
+                  warmed.insert(route.engine).inserted else { continue }
+            router.engine(route.engine)?.prewarm()
+        }
+    }
+
     func retryEngines() { router.resetHealth() }
 
     /// Would any of the user's languages actually reach this engine right now?

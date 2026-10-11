@@ -105,6 +105,10 @@ protocol SpeechEngine: AnyObject {
     /// Cheap, synchronous check: can this engine speak `language` at all?
     func supports(_ language: ReadingLanguage) -> Bool
 
+    /// Get ready for an imminent synthesize (open a connection, load a model).
+    /// Called the moment a read hotkey fires, overlapping text capture.
+    func prewarm()
+
     /// Why the engine can't run right now regardless of language (missing API
     /// key, model not downloaded), or nil when it's ready. Routing skips it.
     var unavailableReason: String? { get }
@@ -119,6 +123,7 @@ protocol SpeechEngine: AnyObject {
 
 extension SpeechEngine {
     var unavailableReason: String? { nil }
+    func prewarm() {}
 }
 
 extension ReadingLanguage {

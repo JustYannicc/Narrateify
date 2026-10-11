@@ -43,7 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `-narrateDelay 5` waits first, to measure warm (post-preload) latency.
             let delay = UserDefaults.standard.double(forKey: "narrateDelay")
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(delay))
+                // Mimic a hotkey: prewarm, then ~200 ms of "selection capture".
+                try? await Task.sleep(for: .seconds(max(0, delay - 0.2)))
+                AppState.shared.narrator.prewarmEngines()
+                try? await Task.sleep(for: .milliseconds(200))
                 AppState.shared.narrate(text)
             }
         }
