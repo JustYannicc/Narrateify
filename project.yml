@@ -55,8 +55,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.Narrateify
         PRODUCT_NAME: Narrateify
-        MARKETING_VERSION: "1.1.2"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "2.0.0"
+        CURRENT_PROJECT_VERSION: "5"
         INFOPLIST_FILE: Info.plist
         # Keep Hardened Runtime; App Sandbox is intentionally omitted (no
         # entitlements file -> unsandboxed, required for cross-app keystrokes

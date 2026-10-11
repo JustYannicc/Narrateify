@@ -8,7 +8,7 @@ import SwiftUI
 final class UpdateChecker: ObservableObject {
 
     /// The public repository, used for the API check and the "Releases" link.
-    static let repo = "yasarkaancan/Narrateify"
+    static let repo = "JustYannicc/Narrateify"
     static var releasesURL: URL { URL(string: "https://github.com/\(repo)/releases")! }
 
     enum State: Equatable {

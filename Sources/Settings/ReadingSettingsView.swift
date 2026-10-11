@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 /// Settings → Reading: which languages you read, and for each one the ordered
@@ -157,7 +158,9 @@ private struct RouteRow: View {
             Spacer()
             Picker("", selection: Binding(get: { route.voiceID },
                                           set: { onChange(VoiceRoute(engine: route.engine, voiceID: $0)) })) {
-                if voices.isEmpty { Text(route.voiceID.isEmpty ? "Default" : route.voiceID).tag(route.voiceID) }
+                if !voices.contains(where: { $0.id == route.voiceID }) {
+                    Text(VoiceNames.fallback(route)).tag(route.voiceID)
+                }
                 ForEach(voices) { Text($0.name).tag($0.id) }
             }
             .labelsHidden()
@@ -208,5 +211,24 @@ enum LanguageCatalog {
             // Detection can't tell en-US from en-GB, so one region per language.
             .filter { lang in !existing.contains { $0.base == lang.base } }
             .sorted { $0.displayName < $1.displayName }
+    }
+}
+
+/// Readable name for a saved voice before (or without) the engine's voice list.
+enum VoiceNames {
+    static func fallback(_ route: VoiceRoute) -> String {
+        guard !route.voiceID.isEmpty else { return "Default" }
+        switch route.engine {
+        case .apple:
+            return AVSpeechSynthesisVoice(identifier: route.voiceID).map { "\($0.name) (\($0.language))" } ?? route.voiceID
+        case .edge:
+            // "de-DE-SeraphinaMultilingualNeural" → "Seraphina (Multilingual)"
+            let name = route.voiceID.split(separator: "-").dropFirst(2).joined(separator: "-")
+                .replacingOccurrences(of: "Neural", with: "")
+            return name.hasSuffix("Multilingual")
+                ? name.replacingOccurrences(of: "Multilingual", with: "") + " (Multilingual)" : name
+        default:
+            return route.voiceID
+        }
     }
 }

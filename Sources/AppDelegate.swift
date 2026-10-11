@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let text = UserDefaults.standard.string(forKey: "narrateText"), !text.isEmpty {
             Task { @MainActor in AppState.shared.narrate(text) }
         }
+        Task { @MainActor in SettingsSnapshot.runIfRequested(state: AppState.shared) }
         #endif
 
         // Quietly check GitHub for a newer release in the background.

@@ -616,8 +616,14 @@ final class AppState: ObservableObject {
         let settings = narrator.settings
         supertonicEngine.idleUnloadAfter = settings.keepModelsWarm ? nil
             : TimeInterval(settings.unloadAfterMinutes * 60)
-        let usesSupertonic = settings.profiles.contains { $0.routes.contains { $0.engine == .supertonic } }
-        if settings.keepModelsWarm, usesSupertonic, supertonic.isInstalled, !supertonicEngine.isLoaded {
+        // Preload only when Supertonic actually reads something: it's first in a
+        // language's chain, or an engine ahead of it is currently unreachable.
+        // As a pure fallback behind a healthy Edge it stays out of memory.
+        let needed = settings.profiles.contains { profile in
+            guard let i = profile.routes.firstIndex(where: { $0.engine == .supertonic }) else { return false }
+            return profile.routes[..<i].allSatisfy { narrator.router.isBenched($0.engine) }
+        }
+        if settings.keepModelsWarm, needed, supertonic.isInstalled, !supertonicEngine.isLoaded {
             Task { try? await supertonicEngine.preload() }
         }
     }
@@ -635,6 +641,8 @@ final class AppState: ObservableObject {
             OpenAISpeechEngine { [unowned self] in .init(apiKey: openAIKey, model: openAIModel) },
         ])
         narrator.onStatus = { [weak self] in self?.status = $0 }
+        // Edge just went down → warm Supertonic now so later sections are fast.
+        narrator.onEngineHealthChange = { [weak self] _, _ in self?.applyModelMemoryPolicy() }
         narrator.saveToHistory = { [weak self] text, audio, routes, characters in
             self?.saveNarration(text: text, audio: audio, routes: routes, characters: characters)
         }

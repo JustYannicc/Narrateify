@@ -46,6 +46,6 @@ enum EngineCatalog {
 
 /// Filled in from on-device measurement of the Supertonic engine.
 enum SupertonicFigures {
-    static let ram = "TBD"
-    static let disk = "404 MB"
+    static let ram = "~400 MB while loaded, 0 when unloaded"
+    static let disk = "~400 MB"
 }

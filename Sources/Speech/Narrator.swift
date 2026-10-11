@@ -19,6 +19,8 @@ final class Narrator: ObservableObject {
     var saveToHistory: ((_ text: String, _ audio: Data, _ routes: [VoiceRoute], _ characters: [Int]) -> Void)?
     /// Reading finished naturally (not stopped) — drives the queue.
     var onFinished: (() -> Void)?
+    /// An engine got benched or recovered (lets the app warm up fallbacks).
+    var onEngineHealthChange: ((SpeechEngineKind, Bool) -> Void)?
     /// Status line updates for the menu bar panel.
     var onStatus: ((String) -> Void)?
 
@@ -30,7 +32,10 @@ final class Narrator: ObservableObject {
 
     init(engines: [SpeechEngine]) {
         router = SpeechRouter(engines: engines)
-        router.onHealthChange = { [weak self] _, _ in self?.healthRevision += 1 }
+        router.onHealthChange = { [weak self] kind, healthy in
+            self?.healthRevision += 1
+            self?.onEngineHealthChange?(kind, healthy)
+        }
         ReaderOverlayController.shared.onClose = { [weak self] in self?.stop() }
     }
 

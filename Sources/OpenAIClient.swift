@@ -15,7 +15,7 @@ struct OpenAIClient {
         var errorDescription: String? {
             switch self {
             case .missingKey:
-                return "Enter your OpenAI API key in Settings → Models."
+                return "Enter your OpenAI API key in Settings → Cloud."
             case .http(let code, let body):
                 let detail = body.isEmpty ? "" : " – \(body.prefix(200))"
                 return "OpenAI error \(code)\(detail)"
