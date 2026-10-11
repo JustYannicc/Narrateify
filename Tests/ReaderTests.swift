@@ -515,6 +515,37 @@ final class ReaderPlaybackIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(elapsed, duration * 0.9, "played the whole stream")
     }
 
+    /// Speeding up mid-section re-schedules from the current spot: the
+    /// highlight keeps moving forward and the rest plays at the new speed.
+    func testRateChangeMidSection() async throws {
+        let text = "The quick brown fox jumps over the lazy dog, while the reader keeps up with every single word it hears."
+        let section = ReadingSection(id: 0, text: text, language: .englishUS)
+        let speech = try await AppleSpeechEngine().synthesize(
+            text, language: .englishUS, voiceID: AppleSpeechEngine.defaultVoice(for: .englishUS) ?? "")
+        let duration = try SectionDecoder.decode(speech, section: section).duration
+        let player = EngineSectionPlayer()
+        player.volume = 0
+        let session = ReadingSession(sections: [section], synthesize: { _, _ in speech },
+                                     player: player, defaults: UserDefaults(suiteName: "ReaderRateTests")!)
+        session.rate = 1
+        var locations: [Int] = []
+        let sub = session.$currentWordRange.sink { if let r = $0 { locations.append(r.location) } }
+        defer { sub.cancel() }
+
+        try await waitUntilPlaying(session)
+        let t0 = Date()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let before = player.position
+        session.rate = 2
+        XCTAssertEqual(player.position, before, accuracy: 0.15, "rate change keeps the spot")
+        try await waitUntil("finished", timeout: duration) { session.finished }
+        let elapsed = Date().timeIntervalSince(t0)
+        let expected = 1 + (duration - 1) / 2
+        print("[reader] \(duration)s, 2× after 1 s: \(elapsed)s (expected \(expected)s)")
+        XCTAssertEqual(elapsed, expected, accuracy: duration * 0.12 + 0.15)
+        XCTAssertEqual(locations, locations.sorted(), "highlight only moves forward")
+    }
+
     private func waitUntilPlaying(_ s: ReadingSession) async throws {
         s.start()
         try await waitUntil("playing") { !s.isBuffering && s.currentWordRange != nil }
@@ -601,5 +632,32 @@ final class MP3StreamDecoderTests: XCTestCase {
         let expected = Double(whole.buffer.frameLength)
         XCTAssertEqual(Double(frames), expected, accuracy: expected * 0.03 + 2400,
                        "streamed \(frames) frames vs \(Int(expected)) from the file")
+    }
+}
+
+final class SpeechStretcherTests: XCTestCase {
+    /// Streamed in chunks, Sonic hits the requested speed and keeps the audio.
+    func testStreamedStretchKeepsRatio() throws {
+        let format = SectionDecoder.playbackFormat
+        let seconds = 2.0
+        let total = AVAudioFrameCount(format.sampleRate * seconds)
+        for speed: Float in [0.75, 1, 1.5, 2, 3] {
+            let s = SpeechStretcher(speed: speed)
+            var out: AVAudioFrameCount = 0
+            var fed: AVAudioFrameCount = 0
+            while fed < total {
+                let n = min(4800, total - fed)
+                let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: n)!
+                for i in 0..<Int(n) {   // 150 Hz "voice" so Sonic finds a pitch period
+                    chunk.floatChannelData![0][i] = Float(sin(Double(Int(fed) + i) * 2 * .pi * 150 / format.sampleRate)) * 0.3
+                }
+                chunk.frameLength = n
+                out += s.process(chunk)?.frameLength ?? 0
+                fed += n
+            }
+            out += s.flush()?.frameLength ?? 0
+            XCTAssertEqual(Double(total) / Double(out), Double(speed), accuracy: Double(speed) * 0.02,
+                           "\(speed)×: \(total) → \(out) frames")
+        }
     }
 }

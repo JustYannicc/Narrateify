@@ -119,18 +119,23 @@ enum SectionDecoder {
     }
 
     /// A copy of `buffer` starting at `frame` — used to resume mid-section
-    /// (restart after an output-device change).
+    /// (restart after an output-device change or a rate change).
     static func tail(of buffer: AVAudioPCMBuffer, from frame: AVAudioFramePosition) -> AVAudioPCMBuffer? {
         let start = AVAudioFrameCount(max(0, min(frame, AVAudioFramePosition(buffer.frameLength))))
-        if start == 0 { return buffer }
-        let remaining = buffer.frameLength - start
-        guard remaining > 0,
-              let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: remaining),
+        if start == 0 { return buffer.frameLength > 0 ? buffer : nil }
+        return slice(of: buffer, from: start, count: buffer.frameLength - start)
+    }
+
+    /// A copy of `count` frames of `buffer` from `start`.
+    static func slice(of buffer: AVAudioPCMBuffer, from start: AVAudioFrameCount,
+                      count: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard count > 0, start + count <= buffer.frameLength,
+              let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: count),
               let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
         for ch in 0..<Int(buffer.format.channelCount) {
-            dst[ch].update(from: src[ch].advanced(by: Int(start)), count: Int(remaining))
+            dst[ch].update(from: src[ch].advanced(by: Int(start)), count: Int(count))
         }
-        out.frameLength = remaining
+        out.frameLength = count
         return out
     }
 }

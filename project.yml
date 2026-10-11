@@ -22,6 +22,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources
+        excludes:
+          - Vendor/Sonic/README.md
+          - Vendor/Sonic/LICENSE
     dependencies:
       - package: OnnxRuntime
         product: onnxruntime
@@ -56,13 +59,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.Narrateify
         PRODUCT_NAME: Narrateify
         MARKETING_VERSION: "2.0.0"
-        CURRENT_PROJECT_VERSION: "6"
+        CURRENT_PROJECT_VERSION: "7"
         INFOPLIST_FILE: Info.plist
         # Keep Hardened Runtime; App Sandbox is intentionally omitted (no
         # entitlements file -> unsandboxed, required for cross-app keystrokes
         # and launching /usr/sbin/screencapture).
         ENABLE_HARDENED_RUNTIME: true
         SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Narrateify-Bridging-Header.h
         # Allow ad-hoc local builds without a development team.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
