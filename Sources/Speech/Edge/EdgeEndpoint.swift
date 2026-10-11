@@ -173,4 +173,17 @@ enum EdgeHTTP {
         config.waitsForConnectivity = false
         return URLSession(configuration: config)
     }
+
+    /// For pooled WebSockets: URLSession's own timeouts must not cut a socket
+    /// that sits idle between sections (server keeps it 300 s); the engine's
+    /// watchdogs own connect/turn deadlines instead.
+    static func makeSocketSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 330
+        config.timeoutIntervalForResource = 24 * 3600
+        config.httpCookieStorage = nil
+        config.urlCache = nil
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }
 }

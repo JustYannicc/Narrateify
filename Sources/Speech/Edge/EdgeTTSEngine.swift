@@ -1,10 +1,18 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "edge")
 
 /// Microsoft Edge "Read Aloud" voices over the browser's WebSocket API.
-/// One connection per section; MP3 out; real word timings from WordBoundary
-/// metadata. Every failure to reach or be accepted by the service maps to
-/// `.serviceUnavailable` quickly (4 s connect deadline) so the router can fall
-/// back and bench the engine.
+/// MP3 out; real word timings from WordBoundary metadata. Every failure to
+/// reach or be accepted by the service maps to `.serviceUnavailable` quickly
+/// (4 s connect deadline) so the router can fall back and bench the engine.
+///
+/// Latency: a handshake costs ~120 ms, so connections are reused. `prewarm()`
+/// opens one ahead of time, and after each section the socket goes back into a
+/// one-slot idle pool for `idleLifetime`, so the sections of a narration share
+/// one socket. A reused socket that doesn't answer within `staleAfter` is
+/// replaced by a fresh one transparently.
 ///
 /// Sections are sent as one SSML request; keep them well under ~4 KB of text
 /// (edge-tts splits at 4096 bytes of escaped text — the service drops more).
@@ -21,9 +29,43 @@ final class EdgeTTSEngine: SpeechEngine {
     /// front-door nodes only (~50% from Zurich, 2026-10-11) and a rejection
     /// takes ~0.1 s, so retrying is cheap.
     let handshakeAttempts: Int
+    /// How long an unused socket is kept (the server allows 300 s).
+    var idleLifetime: TimeInterval = 60
+    /// A reused socket must send its first frame (normally ~50 ms) within this.
+    var staleAfter: TimeInterval = 1.5
 
-    private let preferredLock = NSLock()
+    private let lock = NSLock()
     private var preferred = 0
+    private var idle: EdgeConnection?
+    private var warming: Warmup?
+    private var _lastTiming: Timing?
+
+    private final class Warmup {
+        let task: Task<Result<EdgeConnection, Error>, Never>
+        init(_ task: Task<Result<EdgeConnection, Error>, Never>) { self.task = task }
+    }
+
+    /// Where the time of the last `synthesize` went (also logged, category "edge").
+    struct Timing: CustomStringConvertible {
+        enum Source: String { case fresh, warming, idle, staleRetry }
+        var source: Source
+        /// Waiting for a socket: full connect when fresh, the tail of a
+        /// prewarm in flight, ~0 when idle.
+        var connect: TimeInterval
+        var firstFrame: TimeInterval?
+        var firstAudio: TimeInterval?
+        var turn: TimeInterval
+        var total: TimeInterval
+        var endpoint: String
+
+        var description: String {
+            func ms(_ t: TimeInterval?) -> String { t.map { "\(Int(($0 * 1000).rounded())) ms" } ?? "-" }
+            return "\(source.rawValue) via \(endpoint): socket \(ms(connect)), first frame \(ms(firstFrame)), "
+                + "first audio \(ms(firstAudio)), turn \(ms(turn)), total \(ms(total))"
+        }
+    }
+
+    var lastTiming: Timing? { lock.withLock { _lastTiming } }
 
     init(endpoints: [EdgeEndpoint] = EdgeEndpointV1.all,
          catalog: EdgeVoiceCatalog = .shared,
@@ -43,10 +85,12 @@ final class EdgeTTSEngine: SpeechEngine {
                   connectTimeout: connectTimeout, handshakeAttempts: handshakeAttempts)
     }
 
-    /// Overall budget for one section: generation is much faster than real
-    /// time, so this only trips when the service stalls.
-    static func overallTimeout(forTextLength n: Int, connect: TimeInterval) -> TimeInterval {
-        connect + 6 + Double(n) * 0.04
+    deinit { idle?.close() }
+
+    /// Budget for one turn once connected: generation is much faster than
+    /// real time, so this only trips when the service stalls.
+    static func turnTimeout(forTextLength n: Int) -> TimeInterval {
+        6 + Double(n) * 0.04
     }
 
     func supports(_ language: ReadingLanguage) -> Bool {
@@ -58,187 +102,193 @@ final class EdgeTTSEngine: SpeechEngine {
         await catalog.voices(for: language).map(\.option)
     }
 
+    // MARK: Warm-up
+
+    /// Open a socket now so the next `synthesize` skips the handshake. Cheap to
+    /// call repeatedly; does nothing if a usable socket is idle or one is
+    /// already being opened. Never throws — a failed warm-up is reported by
+    /// the `synthesize` that picks it up.
+    func prewarm() {
+        let warmup: Warmup? = lock.withLock {
+            if let c = idle {
+                if isUsable(c) { return nil }
+                idle = nil
+                c.close()
+            }
+            if warming != nil { return nil }
+            let w = Warmup(Task {
+                do { return .success(try await self.connect()) } catch { return .failure(error) }
+            })
+            warming = w
+            return w
+        }
+        guard let warmup else { return }
+        Task {
+            let result = await warmup.task.value
+            guard case .success(let connection) = result else {
+                lock.withLock { if warming === warmup { warming = nil } }
+                return
+            }
+            // Hand-over from `warming` to `idle` in one step, unless a
+            // synthesize already adopted the warm-up.
+            let outcome: Park = lock.withLock {
+                guard warming === warmup else { return .adopted }
+                warming = nil
+                return park(connection)
+            }
+            finish(connection, outcome)
+        }
+    }
+
+    // MARK: Synthesis
+
     func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech {
         guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
             throw SpeechEngineError.synthesisFailed("Nothing speakable in section")
         }
-        let first = preferredLock.withLock { preferred }
+        let ssml = EdgeProtocol.ssml(text: text, voiceID: voiceID, languageCode: language.code)
+        let timeout = Self.turnTimeout(forTextLength: text.utf16.count)
+        let start = Date()
+
+        var (connection, source) = try await checkOut()
+        let connected = Date()
+        var turn: EdgeConnection.TurnResult
+        do {
+            do {
+                turn = try await connection.speak(ssml: ssml, timeout: timeout,
+                                                  firstFrameTimeout: source == .fresh ? nil : staleAfter)
+            } catch EdgeConnection.TurnFailure.stale(let error) where source != .fresh {
+                // The kept socket died quietly (sleep, network change, server
+                // close). Nothing was spoken yet, so start over on a fresh one.
+                log.notice("reused socket stale (\(error.localizedDescription, privacy: .public)); reconnecting")
+                connection.close()
+                connection = try await connect()
+                source = .staleRetry
+                turn = try await connection.speak(ssml: ssml, timeout: timeout, firstFrameTimeout: nil)
+            }
+        } catch let failure as EdgeConnection.TurnFailure {
+            connection.close()
+            switch failure {
+            case .stale(let e), .failed(let e): throw e
+            }
+        } catch {
+            connection.close()
+            throw error
+        }
+        checkIn(connection)
+
+        let timing = Timing(source: source, connect: connected.timeIntervalSince(start),
+                            firstFrame: turn.firstFrame, firstAudio: turn.firstAudio,
+                            turn: turn.total, total: Date().timeIntervalSince(start),
+                            endpoint: connection.endpointName)
+        lock.withLock { _lastTiming = timing }
+        log.notice("synthesize \(text.utf16.count) chars [\(voiceID, privacy: .public)]: \(timing.description, privacy: .public)")
+        return SynthesizedSpeech(audio: turn.audio, fileExtension: "mp3",
+                                 words: EdgeWordAligner.align(turn.boundaries, in: text))
+    }
+
+    // MARK: Pool
+
+    private func isUsable(_ c: EdgeConnection) -> Bool {
+        c.isAlive && Date().timeIntervalSince(c.lastUsed) < idleLifetime
+    }
+
+    /// An idle socket, else the warm-up in flight, else a fresh connection.
+    private func checkOut() async throws -> (EdgeConnection, Timing.Source) {
+        enum Pick { case idle(EdgeConnection), warming(Warmup), none }
+        let pick: Pick = lock.withLock {
+            if let c = idle {
+                idle = nil
+                if isUsable(c) { return .idle(c) }
+                c.close()
+            }
+            if let w = warming {
+                warming = nil
+                return .warming(w)
+            }
+            return .none
+        }
+        switch pick {
+        case .idle(let c):
+            return (c, .idle)
+        case .warming(let w):
+            // A warm-up that failed already did the endpoint rotation; retrying
+            // would only double the failure latency. We own it now, so a
+            // cancelled synthesize cancels it.
+            let result = await withTaskCancellationHandler { await w.task.value } onCancel: { w.task.cancel() }
+            switch result {
+            case .success(let c): return (c, .warming)
+            case .failure(let e): throw e
+            }
+        case .none:
+            return (try await connect(), .fresh)
+        }
+    }
+
+    private enum Park { case parked, rejected, adopted }
+
+    /// Call with `lock` held.
+    private func park(_ connection: EdgeConnection) -> Park {
+        if let current = idle {
+            guard !isUsable(current) else { return .rejected }
+            current.close()
+        }
+        guard connection.isAlive else { return .rejected }
+        idle = connection
+        return .parked
+    }
+
+    private func checkIn(_ connection: EdgeConnection) {
+        finish(connection, lock.withLock { park(connection) })
+    }
+
+    /// Close a rejected connection, or arm the idle expiry for a parked one.
+    private func finish(_ connection: EdgeConnection, _ outcome: Park) {
+        switch outcome {
+        case .adopted: return
+        case .rejected: return connection.close()
+        case .parked: break
+        }
+        let lastUsed = connection.lastUsed
+        let lifetime = idleLifetime
+        Task { [weak self, weak connection] in
+            try? await Task.sleep(nanoseconds: UInt64(lifetime * 1e9))
+            guard let self, let connection else { return }
+            let expired: Bool = self.lock.withLock {
+                guard self.idle === connection, connection.lastUsed == lastUsed else { return false }
+                self.idle = nil
+                return true
+            }
+            if expired { connection.close() }
+        }
+    }
+
+    /// Handshake with endpoint rotation: handshake rejections and fast
+    /// failures move on to the next endpoint; never more than one connect
+    /// budget in total.
+    private func connect() async throws -> EdgeConnection {
+        let first = lock.withLock { preferred }
         let start = Date()
         var failures: [String] = []
         for i in 0..<handshakeAttempts {
             let index = (first + i) % endpoints.count
             let name = endpoints[index].name
             do {
-                let speech = try await attempt(text, language: language, voiceID: voiceID, endpoint: endpoints[index])
-                preferredLock.withLock { preferred = index }
-                return speech
-            } catch let rejected as HandshakeRejected {
+                let connection = try await EdgeConnection.open(endpoint: endpoints[index], index: index,
+                                                               timeout: connectTimeout)
+                lock.withLock { preferred = index }
+                return connection
+            } catch let rejected as EdgeConnection.HandshakeRejected {
                 failures.append("\(name): HTTP \(rejected.status)")
                 // A wrong local clock produces a stale token: re-anchor to the
                 // server's clock before the next try (no-op if we're in sync).
                 if let date = rejected.serverDate { EdgeClock.shared.adjust(toServerDate: date) }
-            } catch let unreachable as Unreachable {
+            } catch let unreachable as EdgeConnection.Unreachable {
                 failures.append("\(name): \(unreachable.message)")
             }
-            // Only fast failures rotate; never spend more than one connect budget.
             try Task.checkCancellation()
             if Date().timeIntervalSince(start) > connectTimeout { break }
         }
         throw SpeechEngineError.serviceUnavailable("Edge TTS unavailable (\(failures.joined(separator: ", ")))")
-    }
-
-    // MARK: - One connection
-
-    /// The server answered the upgrade with an HTTP error (403 = token/node rejected).
-    struct HandshakeRejected: Error {
-        let status: Int
-        let serverDate: String?
-    }
-
-    /// Failed fast before connecting (DNS, refused, offline). Connect timeouts
-    /// are not this — they already used the whole budget.
-    struct Unreachable: Error {
-        let message: String
-    }
-
-    private func attempt(_ text: String, language: ReadingLanguage, voiceID: String,
-                         endpoint: EdgeEndpoint) async throws -> SynthesizedSpeech {
-        let now = EdgeClock.shared.now()
-        let request = endpoint.synthesisRequest(connectionID: EdgeProtocol.newID(), now: now)
-        // Fresh session per attempt: a pooled keep-alive connection after a
-        // 403 would pin retries to the same rejecting front-door node.
-        let session = EdgeHTTP.makeSession()
-        let ws = session.webSocketTask(with: request)
-        ws.maximumMessageSize = 4 << 20
-        let deadline = Deadline(socket: ws)
-        ws.resume()
-        defer {
-            ws.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
-        }
-
-        let overall = Self.overallTimeout(forTextLength: text.utf16.count, connect: connectTimeout)
-        return try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: SynthesizedSpeech?.self) { group in
-                group.addTask {
-                    try await self.run(ws, deadline: deadline, text: text,
-                                       language: language, voiceID: voiceID)
-                }
-                group.addTask {
-                    // Watchdog: first the handshake, then the whole section. It
-                    // only cancels the socket; the receiving task reports why.
-                    try await Task.sleep(nanoseconds: UInt64(self.connectTimeout * 1e9))
-                    guard deadline.isConnected else {
-                        deadline.fire(.timedOut("Edge TTS connect timed out after \(Int(self.connectTimeout)) s"))
-                        return nil
-                    }
-                    try await Task.sleep(nanoseconds: UInt64((overall - self.connectTimeout) * 1e9))
-                    deadline.fire(.timedOut("Edge TTS timed out after \(Int(overall)) s"))
-                    return nil
-                }
-                defer { group.cancelAll() }
-                while let result = try await group.next() {
-                    if let speech = result { return speech }
-                }
-                throw SpeechEngineError.serviceUnavailable("Edge TTS produced no result")
-            }
-        } onCancel: {
-            deadline.fire(.cancelled)
-        }
-    }
-
-    private func run(_ ws: URLSessionWebSocketTask, deadline: Deadline,
-                     text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech {
-        do {
-            // send() completes only once the handshake succeeded.
-            try await ws.send(.string(EdgeProtocol.speechConfigMessage(timestamp: EdgeProtocol.timestamp())))
-            deadline.markConnected()
-            let ssml = EdgeProtocol.ssml(text: text, voiceID: voiceID, languageCode: language.code)
-            try await ws.send(.string(EdgeProtocol.ssmlMessage(requestID: EdgeProtocol.newID(),
-                                                               timestamp: EdgeProtocol.timestamp(),
-                                                               ssml: ssml)))
-            var audio = Data()
-            var boundaries: [EdgeProtocol.Boundary] = []
-            receiving: while true {
-                switch try await ws.receive() {
-                case .string(let s):
-                    let frame = try EdgeProtocol.parseTextFrame(s)
-                    switch frame.path {
-                    // A bad metadata frame costs highlights, not the audio.
-                    case "audio.metadata": boundaries += (try? EdgeProtocol.parseMetadata(frame.body)) ?? []
-                    case "turn.end": break receiving
-                    default: continue
-                    }
-                case .data(let d):
-                    let frame = try EdgeProtocol.parseBinaryFrame(d)
-                    if frame.path == "audio", frame.headers["Content-Type"] == "audio/mpeg" {
-                        audio.append(frame.body)
-                    }
-                @unknown default:
-                    continue
-                }
-            }
-            guard !audio.isEmpty else {
-                throw SpeechEngineError.synthesisFailed("Edge TTS returned no audio (voice \(voiceID))")
-            }
-            return SynthesizedSpeech(audio: audio, fileExtension: "mp3",
-                                     words: EdgeWordAligner.align(boundaries, in: text))
-        } catch {
-            throw classify(error, ws: ws, deadline: deadline)
-        }
-    }
-
-    private func classify(_ error: Error, ws: URLSessionWebSocketTask, deadline: Deadline) -> Error {
-        switch deadline.reason {
-        case .timedOut(let msg): return SpeechEngineError.serviceUnavailable(msg)
-        case .cancelled: return CancellationError()
-        case nil: break
-        }
-        if let e = error as? SpeechEngineError { return e }
-        if let http = ws.response as? HTTPURLResponse, http.statusCode != 101 {
-            return HandshakeRejected(status: http.statusCode,
-                                     serverDate: http.value(forHTTPHeaderField: "Date"))
-        }
-        if error is EdgeProtocol.ParseError {
-            return SpeechEngineError.synthesisFailed("Edge TTS sent an unexpected frame: \(error)")
-        }
-        if !deadline.isConnected {
-            return Unreachable(message: error.localizedDescription)
-        }
-        // Connected, then the socket died mid-stream (bad voice name, server drop).
-        if let close = closeReason(ws) {
-            return SpeechEngineError.synthesisFailed("Edge TTS closed the connection: \(close)")
-        }
-        return SpeechEngineError.serviceUnavailable("Edge TTS connection lost: \(error.localizedDescription)")
-    }
-
-    private func closeReason(_ ws: URLSessionWebSocketTask) -> String? {
-        guard ws.closeCode != .invalid else { return nil }
-        let reason = ws.closeReason.map { String(decoding: $0, as: UTF8.self) } ?? ""
-        return "code \(ws.closeCode.rawValue) \(reason)".trimmingCharacters(in: .whitespaces)
-    }
-}
-
-/// Shared between the receiving task and the watchdog: records whether the
-/// handshake finished and, if the watchdog fired, why. Firing cancels the
-/// socket, which unblocks any pending send/receive immediately.
-private final class Deadline: @unchecked Sendable {
-    enum Reason { case timedOut(String), cancelled }
-
-    private let lock = NSLock()
-    private let socket: URLSessionWebSocketTask
-    private var connected = false
-    private var _reason: Reason?
-
-    init(socket: URLSessionWebSocketTask) { self.socket = socket }
-
-    var isConnected: Bool { lock.withLock { connected } }
-    var reason: Reason? { lock.withLock { _reason } }
-
-    func markConnected() { lock.withLock { connected = true } }
-
-    func fire(_ reason: Reason) {
-        lock.withLock { if _reason == nil { _reason = reason } }
-        socket.cancel(with: .goingAway, reason: nil)
     }
 }

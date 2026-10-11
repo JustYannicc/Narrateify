@@ -1,4 +1,5 @@
 import XCTest
+import Network
 @testable import Narrateify
 
 /// Edge TTS: token, framing, SSML, and word alignment with fixtures (no network).
@@ -422,4 +423,226 @@ private struct BlackholeEndpoint: EdgeEndpoint {
     }
     func voiceListRequest(now: Date) -> URLRequest { URLRequest(url: URL(string: "http://10.255.255.1:9/")!) }
     func token(now: Date) -> String { "" }
+}
+
+// MARK: - Connection reuse against a local fake Edge server
+
+extension EdgeTTSTests {
+    private func makeEngine(_ server: FakeEdgeServer) -> EdgeTTSEngine {
+        EdgeTTSEngine(endpoint: FixedURLEndpoint(url: "ws://127.0.0.1:\(server.port)/"))
+    }
+
+    private func say(_ engine: EdgeTTSEngine, _ text: String = "Hello brave world") async throws -> SynthesizedSpeech {
+        try await engine.synthesize(text, language: .englishUS, voiceID: "en-US-AriaNeural")
+    }
+
+    func testFakeServerTurnProducesAudioAndWords() async throws {
+        let server = try await FakeEdgeServer.start()
+        let speech = try await say(makeEngine(server))
+        XCTAssertEqual(speech.audio, FakeEdgeServer.audio + FakeEdgeServer.audio)
+        XCTAssertEqual(speech.words.map(\.range), [NSRange(location: 0, length: 5), NSRange(location: 6, length: 5),
+                                                    NSRange(location: 12, length: 5)])
+        XCTAssertEqual(speech.words[1].start, 0.3, accuracy: 1e-9)
+    }
+
+    func testSequentialSectionsShareOneSocket() async throws {
+        let server = try await FakeEdgeServer.start()
+        let engine = makeEngine(server)
+        var sources: [EdgeTTSEngine.Timing.Source] = []
+        for _ in 0..<3 {
+            _ = try await say(engine)
+            sources.append(engine.lastTiming!.source)
+        }
+        XCTAssertEqual(sources, [.fresh, .idle, .idle])
+        XCTAssertEqual(server.connections, 1)
+        XCTAssertEqual(server.turns, 3)
+        XCTAssertEqual(server.configs, 1, "speech.config is sent once per socket")
+    }
+
+    func testPrewarmedSocketIsUsedAndHandshakeSkipped() async throws {
+        let server = try await FakeEdgeServer.start()
+        let engine = makeEngine(server)
+        engine.prewarm()
+        engine.prewarm()   // idempotent
+        _ = try await say(engine)
+        XCTAssertTrue([.warming, .idle].contains(engine.lastTiming!.source))
+        XCTAssertEqual(server.connections, 1)
+
+        // Warm-up that finished before the request: parked idle.
+        let server2 = try await FakeEdgeServer.start()
+        let engine2 = makeEngine(server2)
+        engine2.prewarm()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        _ = try await say(engine2)
+        XCTAssertEqual(engine2.lastTiming!.source, .idle)
+        XCTAssertLessThan(engine2.lastTiming!.connect, 0.01)
+        XCTAssertEqual(server2.connections, 1)
+    }
+
+    func testFailedPrewarmIsReportedBySynthesize() async throws {
+        let engine = EdgeTTSEngine(endpoint: FixedURLEndpoint(url: "ws://127.0.0.1:1/"))
+        engine.prewarm()
+        do { _ = try await say(engine); XCTFail("expected failure") }
+        catch SpeechEngineError.serviceUnavailable {}
+    }
+
+    /// A kept socket that silently stopped answering is replaced quickly.
+    func testUnresponsiveReusedSocketFallsBackToFreshOne() async throws {
+        let server = try await FakeEdgeServer.start(mode: .silentAfterFirstTurn)
+        let engine = makeEngine(server)
+        engine.staleAfter = 0.3
+        _ = try await say(engine)
+        let start = Date()
+        _ = try await say(engine)
+        XCTAssertEqual(engine.lastTiming!.source, .staleRetry)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+        XCTAssertEqual(server.connections, 2)
+    }
+
+    /// A socket the server closed between sections is noticed without waiting.
+    func testServerClosedSocketIsNotReused() async throws {
+        let server = try await FakeEdgeServer.start(mode: .closeAfterTurn)
+        let engine = makeEngine(server)
+        engine.staleAfter = 5
+        _ = try await say(engine)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let start = Date()
+        _ = try await say(engine)
+        XCTAssertEqual(engine.lastTiming!.source, .fresh)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertEqual(server.connections, 2)
+    }
+
+    /// The server refusing a request (e.g. unknown voice) is the request's
+    /// fault, not the socket's: report it, don't burn a handshake retrying.
+    func testServerRejectingRequestIsNotRetried() async throws {
+        let server = try await FakeEdgeServer.start(mode: .rejectSecondTurn)
+        let engine = makeEngine(server)
+        _ = try await say(engine)
+        do { _ = try await say(engine); XCTFail("expected failure") }
+        catch SpeechEngineError.synthesisFailed {}
+        XCTAssertEqual(server.connections, 1)
+    }
+
+    func testIdleSocketExpires() async throws {
+        let server = try await FakeEdgeServer.start()
+        let engine = makeEngine(server)
+        engine.idleLifetime = 0.2
+        _ = try await say(engine)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        _ = try await say(engine)
+        XCTAssertEqual(engine.lastTiming!.source, .fresh)
+        XCTAssertEqual(server.connections, 2)
+    }
+
+    func testConcurrentSectionsUseSeparateSockets() async throws {
+        let server = try await FakeEdgeServer.start()
+        let engine = makeEngine(server)
+        async let a = say(engine)
+        async let b = say(engine)
+        _ = try await (a, b)
+        XCTAssertEqual(server.connections, 2)
+        _ = try await say(engine)
+        XCTAssertEqual(server.connections, 2, "one of them stayed in the idle slot")
+    }
+}
+
+/// Minimal Edge-protocol WebSocket server on localhost (Network.framework).
+final class FakeEdgeServer: @unchecked Sendable {
+    enum Mode { case normal, silentAfterFirstTurn, closeAfterTurn, rejectSecondTurn }
+
+    static let audio = Data([0xFF, 0xF3, 0x44, 0xC4, 0x00, 0x00])
+
+    private let listener: NWListener
+    private let mode: Mode
+    private let queue = DispatchQueue(label: "fake-edge")
+    private let lock = NSLock()
+    private var _connections = 0, _turns = 0, _configs = 0
+    private var live: [NWConnection] = []
+    var connections: Int { lock.withLock { _connections } }
+    var turns: Int { lock.withLock { _turns } }
+    var configs: Int { lock.withLock { _configs } }
+    var port: UInt16 { listener.port!.rawValue }
+
+    private init(mode: Mode) throws {
+        self.mode = mode
+        let params = NWParameters.tcp
+        let ws = NWProtocolWebSocket.Options()
+        ws.autoReplyPing = true
+        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
+        listener = try NWListener(using: params, on: .any)
+    }
+
+    deinit { listener.cancel(); live.forEach { $0.cancel() } }
+
+    static func start(mode: Mode = .normal) async throws -> FakeEdgeServer {
+        let server = try FakeEdgeServer(mode: mode)
+        server.listener.newConnectionHandler = { [weak server] c in server?.accept(c) }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            server.listener.stateUpdateHandler = { state in
+                if case .ready = state, !resumed { resumed = true; cont.resume() }
+            }
+            server.listener.start(queue: server.queue)
+        }
+        return server
+    }
+
+    private func accept(_ c: NWConnection) {
+        lock.withLock { _connections += 1; live.append(c) }
+        c.start(queue: queue)
+        receive(on: c, turnsHere: 0)
+    }
+
+    private func receive(on c: NWConnection, turnsHere: Int) {
+        c.receiveMessage { [weak self] data, _, _, error in
+            guard let self, error == nil, let data else { return }
+            let text = String(decoding: data, as: UTF8.self)
+            var turns = turnsHere
+            if text.contains("Path:speech.config") {
+                self.lock.withLock { self._configs += 1 }
+            } else if text.contains("Path:ssml") {
+                turns += 1
+                if self.mode == .silentAfterFirstTurn, turns > 1 { return self.receive(on: c, turnsHere: turns) }
+                if self.mode == .rejectSecondTurn, turns > 1 { return self.close(c) }
+                self.lock.withLock { self._turns += 1 }
+                self.respond(on: c)
+                if self.mode == .closeAfterTurn { return self.close(c) }
+            }
+            self.receive(on: c, turnsHere: turns)
+        }
+    }
+
+    private func close(_ c: NWConnection) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .close)
+        meta.closeCode = .protocolCode(.policyViolation)
+        c.send(content: nil, contentContext: .init(identifier: "close", metadata: [meta]),
+               isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+    }
+
+    private func respond(on c: NWConnection) {
+        func text(_ path: String, _ body: String) {
+            send(c, Data("X-RequestId:x\r\nContent-Type:application/json; charset=utf-8\r\nPath:\(path)\r\n\r\n\(body)".utf8), .text)
+        }
+        func audio(_ payload: Data) {
+            let h = Array("X-RequestId:x\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n".utf8)
+            send(c, Data([UInt8(h.count >> 8), UInt8(h.count & 0xFF)] + h) + payload, .binary)
+        }
+        func word(_ w: String, _ offset: Int) -> String {
+            #"{"Type":"WordBoundary","Data":{"Offset":\#(offset),"Duration":2000000,"text":{"Text":"\#(w)","Length":\#(w.count),"BoundaryType":"WordBoundary"}}}"#
+        }
+        text("turn.start", "{}")
+        text("response", "{}")
+        audio(Self.audio)
+        text("audio.metadata", #"{"Metadata":[\#(word("Hello", 1_000_000)),\#(word("brave", 3_000_000))]}"#)
+        audio(Self.audio)
+        text("audio.metadata", #"{"Metadata":[\#(word("world", 5_000_000))]}"#)
+        text("turn.end", "{}")
+    }
+
+    private func send(_ c: NWConnection, _ data: Data, _ opcode: NWProtocolWebSocket.Opcode) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: opcode)
+        c.send(content: data, contentContext: .init(identifier: "m", metadata: [meta]),
+               isComplete: true, completion: .contentProcessed { _ in })
+    }
 }
