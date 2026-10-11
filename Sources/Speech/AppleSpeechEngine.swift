@@ -8,28 +8,46 @@ final class AppleSpeechEngine: SpeechEngine {
     let kind: SpeechEngineKind = .apple
 
     func supports(_ language: ReadingLanguage) -> Bool {
-        AVSpeechSynthesisVoice.speechVoices().contains { Self.matches($0, language) }
+        !Self.installed(for: language).isEmpty
     }
 
     func voices(for language: ReadingLanguage) async -> [VoiceOption] {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { Self.matches($0, language) }
+        Self.installed(for: language)
             .sorted { lhs, rhs in
                 // Exact locale and better quality first.
                 let l = (lhs.language == language.code ? 0 : 1, -lhs.quality.rawValue)
                 let r = (rhs.language == language.code ? 0 : 1, -rhs.quality.rawValue)
                 return l != r ? l < r : lhs.name < rhs.name
             }
-            .map { v in
-                let tier = v.quality == .premium ? " ✦" : v.quality == .enhanced ? " +" : ""
-                return VoiceOption(id: v.identifier, name: "\(v.name)\(tier) (\(v.language))",
-                                   languages: [v.language])
-            }
+            .map(Self.option(for:))
+    }
+
+    static func option(for v: AVSpeechSynthesisVoice) -> VoiceOption {
+        let tier = v.quality == .premium ? " ✦" : v.quality == .enhanced ? " +" : ""
+        return VoiceOption(id: v.identifier, name: "\(v.name)\(tier) (\(v.language))", languages: [v.language])
+    }
+
+    // `speechVoices()` is slow-ish and called per section and per settings
+    // render, so cache the filtered list per language until voices change.
+    private static let cacheLock = NSLock()
+    private static var cache: [String: [AVSpeechSynthesisVoice]] = [:]
+    private static let invalidator: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: AVSpeechSynthesizer.availableVoicesDidChangeNotification, object: nil, queue: nil
+    ) { _ in cacheLock.withLock { cache.removeAll() } }
+
+    private static func installed(for language: ReadingLanguage) -> [AVSpeechSynthesisVoice] {
+        _ = invalidator
+        return cacheLock.withLock {
+            if let hit = cache[language.code] { return hit }
+            let voices = AVSpeechSynthesisVoice.speechVoices().filter { matches($0, language) }
+            cache[language.code] = voices
+            return voices
+        }
     }
 
     /// Best installed voice for `language` — used when a route has no voice.
     static func defaultVoice(for language: ReadingLanguage) -> String? {
-        let all = AVSpeechSynthesisVoice.speechVoices().filter { matches($0, language) }
+        let all = installed(for: language)
         let exact = all.filter { $0.language == language.code }
         return (exact.max { $0.quality.rawValue < $1.quality.rawValue }
                 ?? all.max { $0.quality.rawValue < $1.quality.rawValue })?.identifier
@@ -104,6 +122,6 @@ final class AppleSpeechEngine: SpeechEngine {
         // nobody wants to read an article in them.
         let id = voice.identifier
         guard !id.contains("speech.synthesis.voice"), !id.hasPrefix("com.apple.eloquence") else { return false }
-        return voice.language == language.code || voice.language.lowercased().hasPrefix(language.base + "-")
+        return language.matches(localeTag: voice.language)
     }
 }

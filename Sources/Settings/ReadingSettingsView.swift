@@ -2,10 +2,16 @@ import AVFoundation
 import SwiftUI
 
 /// Settings → Reading: which languages you read, and for each one the ordered
-/// engine/voice chain to try (first that works wins).
+/// engine/voice chain to try (first that works wins). Observes the narrator
+/// and settings only — not AppState, which republishes on every audio tick.
 struct ReadingSettingsView: View {
-    @EnvironmentObject var state: AppState
+    @ObservedObject var narrator: Narrator
     @ObservedObject var settings: ReadingSettings
+
+    init(narrator: Narrator) {
+        self.narrator = narrator
+        self.settings = narrator.settings
+    }
 
     var body: some View {
         Form {
@@ -27,7 +33,7 @@ struct ReadingSettingsView: View {
                 }
                 .onMove { settings.profiles.move(fromOffsets: $0, toOffset: $1) }
                 Menu("Add language") {
-                    ForEach(LanguageCatalog.addable(excluding: settings.languages), id: \.self) { lang in
+                    ForEach(LanguageCatalog.addable(excluding: settings.languages)) { lang in
                         Button(lang.displayName) { settings.addLanguage(lang) }
                     }
                 }
@@ -38,18 +44,16 @@ struct ReadingSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            ForEach(settings.profiles) { profile in
-                LanguageChainSection(profile: profile, settings: settings)
+            ForEach($settings.profiles) { $profile in
+                LanguageChainSection(profile: $profile, narrator: narrator)
             }
 
             Section("Speed & memory") {
                 Toggle("Keep local models loaded", isOn: $settings.keepModelsWarm)
-                if !settings.keepModelsWarm {
-                    Stepper("Unload after \(settings.unloadAfterMinutes) min idle",
-                            value: $settings.unloadAfterMinutes, in: 1...120)
-                }
+                Stepper("Unload after \(settings.unloadAfterMinutes) min idle",
+                        value: $settings.unloadAfterMinutes, in: 1...120)
                 Text(settings.keepModelsWarm
-                     ? "Instant start every time. Supertonic stays in memory (see Engines)."
+                     ? "Supertonic stays loaded (~120 MB) while it's the engine actually reading; as an unused fallback it unloads after the idle time."
                      : "Frees the memory between narrations; the first read after unloading takes a moment longer.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -60,25 +64,24 @@ struct ReadingSettingsView: View {
 
 /// One language's fallback chain.
 private struct LanguageChainSection: View {
-    @EnvironmentObject var state: AppState
-    let profile: LanguageProfile
-    @ObservedObject var settings: ReadingSettings
+    @Binding var profile: LanguageProfile
+    @ObservedObject var narrator: Narrator
     @State private var testResult: String?
     @State private var testing = false
 
     var body: some View {
         Section {
-            ForEach(Array(profile.routes.enumerated()), id: \.element.id) { index, route in
-                RouteRow(index: index, route: route, language: profile.language,
-                         onChange: { replace(index, with: $0) },
-                         onMove: { move(index, by: $0) },
-                         onDelete: { remove(index) },
-                         isFirst: index == 0,
-                         isLast: index == profile.routes.count - 1)
+            ForEach(profile.routes.indices, id: \.self) { index in
+                RouteRow(route: $profile.routes[index], index: index, count: profile.routes.count,
+                         language: profile.language, narrator: narrator) { action in
+                    perform(action, at: index)
+                }
             }
             HStack {
                 Menu("Add fallback") {
-                    ForEach(SpeechEngineKind.allCases) { kind in
+                    ForEach(SpeechEngineKind.allCases.filter { kind in
+                        !profile.routes.contains { $0.engine == kind }
+                    }) { kind in
                         Button(kind.label) { add(kind) }
                     }
                 }
@@ -98,54 +101,57 @@ private struct LanguageChainSection: View {
         }
     }
 
-    private func replace(_ index: Int, with route: VoiceRoute) {
-        var p = profile
-        p.routes[index] = route
-        settings.update(p)
+    private func perform(_ action: RouteRow.Action, at index: Int) {
+        switch action {
+        case .moveUp where index > 0:
+            profile.routes.swapAt(index, index - 1)
+        case .moveDown where index < profile.routes.count - 1:
+            profile.routes.swapAt(index, index + 1)
+        case .delete where profile.routes.count > 1:
+            profile.routes.remove(at: index)
+        default:
+            break
+        }
     }
 
-    private func move(_ index: Int, by delta: Int) {
-        var p = profile
-        let target = index + delta
-        guard p.routes.indices.contains(target) else { return }
-        p.routes.swapAt(index, target)
-        settings.update(p)
-    }
-
-    private func remove(_ index: Int) {
-        var p = profile
-        guard p.routes.count > 1 else { return }
-        p.routes.remove(at: index)
-        settings.update(p)
-    }
-
+    /// New fallback with a working voice: the language default if there is
+    /// one, else the engine's first voice for this language.
     private func add(_ kind: SpeechEngineKind) {
-        var p = profile
-        let fallback = ReadingSettings.defaultProfile(profile.language).routes.first { $0.engine == kind }
-        p.routes.append(fallback ?? VoiceRoute(engine: kind, voiceID: ""))
-        settings.update(p)
+        let language = profile.language
+        if let route = ReadingSettings.defaultProfile(language).routes.first(where: { $0.engine == kind }),
+           !route.voiceID.isEmpty {
+            profile.routes.append(route)
+            return
+        }
+        profile.routes.append(VoiceRoute(engine: kind, voiceID: ""))
+        let index = profile.routes.count - 1
+        Task {
+            guard let first = await narrator.voices(kind, language: language).first,
+                  profile.routes.indices.contains(index), profile.routes[index].engine == kind,
+                  profile.routes[index].voiceID.isEmpty else { return }
+            profile.routes[index].voiceID = first.id
+        }
     }
 
     private func runTest() {
         testing = true
         testResult = nil
         Task {
-            testResult = await state.narrator.test(profile.language)
+            testResult = await narrator.test(profile.language)
             testing = false
         }
     }
 }
 
 private struct RouteRow: View {
-    @EnvironmentObject var state: AppState
+    enum Action { case moveUp, moveDown, delete }
+
+    @Binding var route: VoiceRoute
     let index: Int
-    let route: VoiceRoute
+    let count: Int
     let language: ReadingLanguage
-    let onChange: (VoiceRoute) -> Void
-    let onMove: (Int) -> Void
-    let onDelete: () -> Void
-    let isFirst: Bool
-    let isLast: Bool
+    @ObservedObject var narrator: Narrator
+    let perform: (Action) -> Void
     @State private var voices: [VoiceOption] = []
 
     var body: some View {
@@ -153,82 +159,82 @@ private struct RouteRow: View {
             Text("\(index + 1).").monospacedDigit().foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(route.engine.label).font(.callout)
-                EngineHealthLabel(kind: route.engine, language: language)
+                HealthLabel(health: narrator.health(route.engine, language: language))
             }
             Spacer()
-            Picker("", selection: Binding(get: { route.voiceID },
-                                          set: { onChange(VoiceRoute(engine: route.engine, voiceID: $0)) })) {
+            Picker("", selection: $route.voiceID) {
                 if !voices.contains(where: { $0.id == route.voiceID }) {
-                    Text(VoiceNames.fallback(route)).tag(route.voiceID)
+                    Text(VoiceNames.display(route)).tag(route.voiceID)
                 }
                 ForEach(voices) { Text($0.name).tag($0.id) }
             }
             .labelsHidden()
             .frame(maxWidth: 210)
-            Button { state.narrator.preview(route, language: language) } label: { Image(systemName: "play.circle") }
+            Button { narrator.preview(route, language: language) } label: { Image(systemName: "play.circle") }
                 .buttonStyle(.borderless).help("Preview this voice")
-            Button { onMove(-1) } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.borderless).disabled(isFirst)
-            Button { onMove(1) } label: { Image(systemName: "chevron.down") }
-                .buttonStyle(.borderless).disabled(isLast)
-            Button(role: .destructive, action: onDelete) { Image(systemName: "xmark") }
-                .buttonStyle(.borderless).disabled(isFirst && isLast)
+            Button { perform(.moveUp) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless).disabled(index == 0)
+            Button { perform(.moveDown) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.borderless).disabled(index == count - 1)
+            Button(role: .destructive) { perform(.delete) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless).disabled(count == 1)
         }
         .task(id: route.engine) {
-            voices = await state.narrator.voices(route.engine, language: language)
+            voices = await narrator.voices(route.engine, language: language)
         }
     }
 }
 
-/// A one-line status under an engine name: unsupported / not installed /
-/// unreachable / ok.
-private struct EngineHealthLabel: View {
-    @EnvironmentObject var state: AppState
-    let kind: SpeechEngineKind
-    let language: ReadingLanguage
+/// A one-line status under an engine name.
+private struct HealthLabel: View {
+    let health: EngineHealth
 
     var body: some View {
-        let (text, color) = state.narrator.health(kind, language: language)
-        if !text.isEmpty {
-            Text(text).font(.caption2).foregroundStyle(color)
+        switch health {
+        case .ok: EmptyView()
+        case .needsSetup(let text), .unsupported(let text):
+            Text(text).font(.caption2).foregroundStyle(.orange)
+        case .unreachable:
+            Text("Unreachable — skipped for now").font(.caption2).foregroundStyle(.red)
         }
-    }
-}
-
-/// Languages offered in "Add language": anything at least one engine can speak,
-/// in the region we have the best voices for.
-enum LanguageCatalog {
-    /// Supertonic 3's 31 languages ∪ the regions Edge has strong voices for.
-    static let codes: [String] = [
-        "en-US", "en-GB", "de-DE", "de-AT", "de-CH", "fr-FR", "es-ES", "it-IT", "pt-BR", "pt-PT",
-        "nl-NL", "da-DK", "sv-SE", "fi-FI", "pl-PL", "cs-CZ", "sk-SK", "sl-SI", "hr-HR", "hu-HU",
-        "ro-RO", "bg-BG", "el-GR", "et-EE", "lv-LV", "lt-LT", "ru-RU", "uk-UA", "tr-TR", "ar-SA",
-        "hi-IN", "id-ID", "vi-VN", "ja-JP", "ko-KR",
-    ]
-
-    static func addable(excluding existing: [ReadingLanguage]) -> [ReadingLanguage] {
-        codes.map(ReadingLanguage.init(code:))
-            // Detection can't tell en-US from en-GB, so one region per language.
-            .filter { lang in !existing.contains { $0.base == lang.base } }
-            .sorted { $0.displayName < $1.displayName }
     }
 }
 
 /// Readable name for a saved voice before (or without) the engine's voice list.
 enum VoiceNames {
-    static func fallback(_ route: VoiceRoute) -> String {
+    static func display(_ route: VoiceRoute) -> String {
         guard !route.voiceID.isEmpty else { return "Default" }
         switch route.engine {
         case .apple:
-            return AVSpeechSynthesisVoice(identifier: route.voiceID).map { "\($0.name) (\($0.language))" } ?? route.voiceID
+            return AVSpeechSynthesisVoice(identifier: route.voiceID).map { AppleSpeechEngine.option(for: $0).name }
+                ?? route.voiceID
         case .edge:
-            // "de-DE-SeraphinaMultilingualNeural" → "Seraphina (Multilingual)"
-            let name = route.voiceID.split(separator: "-").dropFirst(2).joined(separator: "-")
-                .replacingOccurrences(of: "Neural", with: "")
-            return name.hasSuffix("Multilingual")
-                ? name.replacingOccurrences(of: "Multilingual", with: "") + " (Multilingual)" : name
-        default:
+            let locale = route.voiceID.split(separator: "-").prefix(2).joined(separator: "-")
+            return EdgeVoice(shortName: route.voiceID, locale: locale).displayName
+        case .supertonic:
+            return SupertonicEngine.voices.first { $0.id == route.voiceID }?.name ?? route.voiceID
+        case .elevenLabs, .openAI:
             return route.voiceID
         }
+    }
+}
+
+/// Languages offered in "Add language": anything at least one engine can speak
+/// (Supertonic's 31 plus the regions Edge has strong voices for), each in the
+/// region from `ReadingSettings.preferredRegion` unless a region is listed.
+enum LanguageCatalog {
+    private static let all: [ReadingLanguage] = {
+        let supertonicBases = ["ar", "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el",
+                               "hi", "hu", "id", "it", "ja", "ko", "lv", "lt", "pl", "pt", "ro", "ru",
+                               "sk", "sl", "es", "sv", "tr", "uk", "vi"]
+        let extraRegions = ["en-GB", "de-AT", "de-CH", "pt-PT", "zh-CN"]
+        let primary = supertonicBases.map { ReadingSettings.preferredRegion[$0] ?? $0 }
+        return (primary + extraRegions).map(ReadingLanguage.init(code:))
+            .sorted { $0.displayName < $1.displayName }
+    }()
+
+    static func addable(excluding existing: [ReadingLanguage]) -> [ReadingLanguage] {
+        // Detection can't tell en-US from en-GB, so one region per language.
+        all.filter { lang in !existing.contains { $0.base == lang.base } }
     }
 }

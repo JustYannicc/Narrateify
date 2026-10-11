@@ -22,6 +22,7 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
     private let originYKey = "readerOverlayOriginY"
 
     var isVisible: Bool { panel?.isVisible ?? false }
+    private var hideGeneration = 0
 
     /// Build the panel and SwiftUI view graph ahead of time (at launch) so the
     /// first narration doesn't pay ~100 ms of view construction on the main
@@ -38,9 +39,11 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
     /// Show `session` (replacing any previous one's view). Doesn't start it.
     func show(_ session: ReadingSession) {
         self.session = session
+        hideGeneration += 1          // cancels a fade-out still in flight
         let panel = ensurePanel()
         panel.contentView = makeHostingView(for: session)
         guard !panel.isVisible else {
+            panel.alphaValue = 1
             position(panel, keepOrigin: true)
             return
         }
@@ -62,12 +65,19 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
 
     func hide() {
         guard let panel, panel.isVisible else { return }
+        hideGeneration += 1
+        let generation = hideGeneration
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
-        }, completionHandler: {
+        }, completionHandler: { [weak self] in
+            // A show() during the fade wins: don't order its panel out.
+            guard let self, self.hideGeneration == generation else { return }
             panel.orderOut(nil)
+            // Drop the finished session (and its cached audio) with the view.
+            panel.contentView = nil
+            self.session = nil
         })
     }
 

@@ -48,11 +48,6 @@ final class ReadingSettings: ObservableObject {
         profiles.removeAll { $0.language == language }
     }
 
-    func update(_ profile: LanguageProfile) {
-        guard let i = profiles.firstIndex(where: { $0.language == profile.language }) else { return }
-        profiles[i] = profile
-    }
-
     private func persist() {
         if let data = try? JSONEncoder().encode(profiles) {
             UserDefaults.standard.set(data, forKey: Keys.profiles)
@@ -66,7 +61,7 @@ final class ReadingSettings: ObservableObject {
     static func initialLanguages() -> [ReadingLanguage] {
         var seen = Set<String>()
         let langs = Locale.preferredLanguages.compactMap { tag -> ReadingLanguage? in
-            let base = String(tag.split(separator: "-").first ?? "").lowercased()
+            let base = ReadingLanguage(code: tag).base
             guard !base.isEmpty, seen.insert(base).inserted else { return nil }
             return ReadingLanguage(code: preferredRegion[base] ?? tag)
         }
@@ -78,6 +73,9 @@ final class ReadingSettings: ObservableObject {
         "en": "en-US", "de": "de-DE", "fr": "fr-FR", "es": "es-ES", "it": "it-IT",
         "pt": "pt-BR", "nl": "nl-NL", "ja": "ja-JP", "ko": "ko-KR", "zh": "zh-CN",
         "tr": "tr-TR", "pl": "pl-PL", "sv": "sv-SE", "da": "da-DK", "ru": "ru-RU",
+        "ar": "ar-SA", "bg": "bg-BG", "hr": "hr-HR", "cs": "cs-CZ", "et": "et-EE", "fi": "fi-FI",
+        "el": "el-GR", "hi": "hi-IN", "hu": "hu-HU", "id": "id-ID", "lv": "lv-LV", "lt": "lt-LT",
+        "ro": "ro-RO", "sk": "sk-SK", "sl": "sl-SI", "uk": "uk-UA", "vi": "vi-VN",
     ]
 
     /// Edge (best quality when reachable) → Supertonic (local, fast) → Apple
@@ -87,7 +85,7 @@ final class ReadingSettings: ObservableObject {
         if let edge = defaultEdgeVoice[language.code] {
             routes.append(VoiceRoute(engine: .edge, voiceID: edge))
         }
-        routes.append(VoiceRoute(engine: .supertonic, voiceID: "F1"))
+        routes.append(VoiceRoute(engine: .supertonic, voiceID: SupertonicEngine.defaultVoiceID))
         routes.append(VoiceRoute(engine: .apple, voiceID: AppleSpeechEngine.defaultVoice(for: language) ?? ""))
         return LanguageProfile(language: language, routes: routes)
     }

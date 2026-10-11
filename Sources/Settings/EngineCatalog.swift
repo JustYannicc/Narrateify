@@ -23,7 +23,8 @@ enum EngineCatalog {
                    languages: "100+ (incl. multilingual voices)",
                    privacy: "Text sent to Microsoft",
                    blurb: "Microsoft's neural Read Aloud voices — the same ones SuperCmd and the Read Aloud extension use. Free, unofficial endpoint: it can break without notice (it started failing in parts of Europe on 2026-10-10)."),
-        EngineCard(kind: .supertonic, speed: 9, quality: 7, ram: SupertonicFigures.ram, disk: SupertonicFigures.disk,
+        EngineCard(kind: .supertonic, speed: 9, quality: 7, ram: "~120 MB while loaded (Core ML), ~0 unloaded",
+                   disk: "~220 MB (macOS 15+), ~400 MB on 14",
                    languages: "31 (incl. EN, DE)",
                    privacy: "Fully on-device",
                    blurb: "Supertone's on-device model (the one in Read Aloud). Core ML + ONNX Runtime on the CPU — no Python, no GPU; ~100–150 ms per sentence on Apple silicon. The best local fallback for Edge."),
@@ -40,12 +41,4 @@ enum EngineCatalog {
                    privacy: "Text sent to OpenAI",
                    blurb: "Natural multilingual cloud voices. Paid; needs an API key."),
     ]
-
-    static func card(_ kind: SpeechEngineKind) -> EngineCard? { cards.first { $0.kind == kind } }
-}
-
-/// Filled in from on-device measurement of the Supertonic engine.
-enum SupertonicFigures {
-    static let ram = "~120 MB while loaded (Core ML), ~0 unloaded"
-    static let disk = "~220 MB (macOS 15+), ~400 MB on 14"
 }

@@ -73,10 +73,7 @@ struct VoiceOption: Codable, Hashable, Identifiable {
     let languages: [String]
 
     func speaks(_ language: ReadingLanguage) -> Bool {
-        languages.contains { tag in
-            tag == "*" || tag.caseInsensitiveCompare(language.code) == .orderedSame
-                || tag.lowercased() == language.base
-        }
+        languages.contains { $0 == "*" || language.matches(localeTag: $0) }
     }
 }
 
@@ -105,8 +102,12 @@ enum SpeechEngineError: LocalizedError, Equatable {
 protocol SpeechEngine: AnyObject {
     var kind: SpeechEngineKind { get }
 
-    /// Cheap, synchronous capability check used by routing and the settings UI.
+    /// Cheap, synchronous check: can this engine speak `language` at all?
     func supports(_ language: ReadingLanguage) -> Bool
+
+    /// Why the engine can't run right now regardless of language (missing API
+    /// key, model not downloaded), or nil when it's ready. Routing skips it.
+    var unavailableReason: String? { get }
 
     /// Voices usable for `language` (may hit the network or disk).
     func voices(for language: ReadingLanguage) async -> [VoiceOption]
@@ -114,6 +115,19 @@ protocol SpeechEngine: AnyObject {
     /// Synthesize one section at 1× speed. Throw `SpeechEngineError` so the
     /// router can fall back.
     func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech
+}
+
+extension SpeechEngine {
+    var unavailableReason: String? { nil }
+}
+
+extension ReadingLanguage {
+    /// Whether a voice/locale tag ("de-DE", "de", "DE-ch") belongs to this
+    /// language: exact match, bare base code, or same base with any region.
+    func matches(localeTag tag: String) -> Bool {
+        let t = tag.lowercased()
+        return t == code.lowercased() || t == base || t.hasPrefix(base + "-")
+    }
 }
 
 extension WordTiming {

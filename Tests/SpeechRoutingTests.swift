@@ -134,3 +134,27 @@ final class SpeechRouterTests: XCTestCase {
         XCTAssertEqual(("Hallo schöne Welt" as NSString).substring(with: words[1].range), "schöne")
     }
 }
+
+@MainActor
+final class NarratorTests: XCTestCase {
+    private final class InstantEngine: SpeechEngine {
+        let kind: SpeechEngineKind = .apple
+        func supports(_ language: ReadingLanguage) -> Bool { true }
+        func voices(for language: ReadingLanguage) async -> [VoiceOption] { [] }
+        func synthesize(_ text: String, language: ReadingLanguage, voiceID: String) async throws -> SynthesizedSpeech {
+            throw SpeechEngineError.synthesisFailed("not needed")
+        }
+    }
+
+    /// A stopped session (and its cached audio) must be freed — the synthesize
+    /// closure once captured the session strongly.
+    func testStoppedSessionIsReleased() async throws {
+        let narrator = Narrator(engines: [InstantEngine()])
+        narrator.read("Hello there, this is a short test of the reader.", showOverlay: false)
+        weak var session = narrator.session
+        XCTAssertNotNil(session)
+        narrator.stop()
+        try await Task.sleep(for: .milliseconds(200))   // let cancelled jobs unwind
+        XCTAssertNil(session)
+    }
+}

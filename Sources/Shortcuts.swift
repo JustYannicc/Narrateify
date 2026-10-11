@@ -138,10 +138,11 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .narrateClipboard:  return Shortcut(keyCode: UInt32(kVK_ANSI_V), carbonModifiers: mods)
         case .quickNarrate:      return Shortcut(keyCode: UInt32(kVK_ANSI_N), carbonModifiers: mods)
         case .togglePlayback:    return Shortcut(keyCode: UInt32(kVK_Space), carbonModifiers: mods)
-        case .previousSection:   return Shortcut(keyCode: UInt32(kVK_LeftArrow), carbonModifiers: mods)
-        case .nextSection:       return Shortcut(keyCode: UInt32(kVK_RightArrow), carbonModifiers: mods)
-        case .faster:            return Shortcut(keyCode: UInt32(kVK_UpArrow), carbonModifiers: mods)
-        case .slower:            return Shortcut(keyCode: UInt32(kVK_DownArrow), carbonModifiers: mods)
+        // Not ⌃⌥ arrows: those are Rectangle's/Magnet's window-snapping defaults.
+        case .previousSection:   return Shortcut(keyCode: UInt32(kVK_ANSI_LeftBracket), carbonModifiers: mods)
+        case .nextSection:       return Shortcut(keyCode: UInt32(kVK_ANSI_RightBracket), carbonModifiers: mods)
+        case .faster:            return Shortcut(keyCode: UInt32(kVK_ANSI_Equal), carbonModifiers: mods)
+        case .slower:            return Shortcut(keyCode: UInt32(kVK_ANSI_Minus), carbonModifiers: mods)
         case .stop:              return Shortcut(keyCode: UInt32(kVK_ANSI_X), carbonModifiers: mods)
         }
     }
@@ -156,10 +157,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .narrateClipboard:  AppState.shared.narrateClipboard()
         case .quickNarrate:      AppState.shared.showQuickNarrate()
         case .togglePlayback:    AppState.shared.togglePlayback()
-        case .previousSection:   AppState.shared.narrator.session?.previous()
-        case .nextSection:       AppState.shared.narrator.session?.next()
-        case .faster:            AppState.shared.narrator.session?.faster()
-        case .slower:            AppState.shared.narrator.session?.slower()
+        case .previousSection:   AppState.shared.previousSection()
+        case .nextSection:       AppState.shared.nextSection()
+        case .faster:            AppState.shared.readFaster()
+        case .slower:            AppState.shared.readSlower()
         case .stop:              AppState.shared.stop()
         }
     }

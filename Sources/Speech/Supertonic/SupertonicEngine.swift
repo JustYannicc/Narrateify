@@ -130,6 +130,17 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
         queue.async { self.unloadNow() }
     }
 
+    /// Unload and wait until it's done (queued after any in-flight synthesis),
+    /// e.g. before deleting the model files.
+    func unloadAndWait() async {
+        await withCheckedContinuation { cont in
+            queue.async {
+                self.unloadNow()
+                cont.resume()
+            }
+        }
+    }
+
     private func onQueue<T>(_ work: @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { cont in
             queue.async {

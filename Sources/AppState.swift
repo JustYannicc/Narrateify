@@ -112,12 +112,8 @@ final class AppState: ObservableObject {
 
     // MARK: Runtime state
     @Published var status: String = "Ready"
-    /// True while the reader waits on synthesis (drives the menu bar icon).
-    var isSynthesizing: Bool { narrator.session?.isBuffering ?? false }
     /// A narration is on screen / playing.
     var isReading: Bool { narrator.isActive }
-    /// True while a short voice preview is being fetched/synthesized.
-    @Published private(set) var isPreviewing = false
     /// Whether the Settings window is currently on screen (drives the menu's
     /// "Settings (open)" affordance).
     @Published var settingsWindowOpen = false
@@ -177,28 +173,19 @@ final class AppState: ObservableObject {
                 self.refreshNowPlaying()
             }
             .store(in: &cancellables)
-        // Likewise for history changes (so the Settings list updates live).
-        history.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-        // …and the narrator (reader session, engine health) + Supertonic model.
-        for publisher in [narrator.objectWillChange.eraseToAnyPublisher(),
-                          supertonic.objectWillChange.eraseToAnyPublisher()] {
+        // …and every other model object the menu/Settings render from.
+        let children: [AnyPublisher<Void, Never>] = [
+            history.objectWillChange.eraseToAnyPublisher(),
+            narrator.objectWillChange.eraseToAnyPublisher(),
+            supertonic.objectWillChange.eraseToAnyPublisher(),
+            shortcutStore.objectWillChange.eraseToAnyPublisher(),
+            updateChecker.objectWillChange.eraseToAnyPublisher(),
+        ]
+        for publisher in children {
             publisher.receive(on: RunLoop.main)
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
         }
-        // …and the editable keyboard-shortcut bindings.
-        shortcutStore.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-        // …and the GitHub update checker's result.
-        updateChecker.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &cancellables)
 
         supertonic.$installedBackend
             .removeDuplicates()
@@ -216,8 +203,12 @@ final class AppState: ObservableObject {
         // Begin watching the clipboard if the user left it enabled.
         if clipboardWatch { startClipboardWatch() }
 
-        // Advance the reading queue (and clear Now Playing) when reading ends.
+        // Advance the reading queue (and clear Now Playing) when reading or a
+        // History recording ends.
         narrator.onFinished = { [weak self] in self?.handlePlaybackFinished() }
+        audio.onFinished = { [weak self] in self?.handlePlaybackFinished() }
+        // The reader's close button behaves like Stop (clears the queue too).
+        ReaderOverlayController.shared.onClose = { [weak self] in self?.stop() }
 
         // Hook the media keys / Control Center transport to playback.
         NowPlayingController.shared.activate(
@@ -309,6 +300,7 @@ final class AppState: ObservableObject {
     }
 
     func stop() {
+        translationTask?.cancel()
         narrator.stop()
         audio.stop()
         queue.removeAll()
@@ -349,7 +341,7 @@ final class AppState: ObservableObject {
     func enqueue(_ text: String, title: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if audio.hasAudio || isReading {
+        if audio.isPlaying || isReading || translationTask != nil {
             queue.append(QueueItem(title: title ?? String(trimmed.prefix(50)), text: trimmed))
             status = "Queued — \(queue.count) waiting"
         } else {
@@ -396,8 +388,7 @@ final class AppState: ObservableObject {
         sleepTimer = nil
         sleepTimerEnds = nil
         queue.removeAll()      // don't roll into the next queued item
-        audio.pause()
-        if narrator.session?.isPlaying == true { narrator.togglePlayPause() }
+        togglePlayback(wantPlaying: false)
         status = "Paused by sleep timer"
     }
 
@@ -533,41 +524,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: Voice preview
-
-    /// Plays a short sample of the currently-selected voice so the user can
-    /// audition it before narrating. Uses ElevenLabs' free hosted preview when
-    /// available; otherwise synthesizes a brief sample with the active engine.
-    /// Previews are NOT saved to history.
-    /// The fixed sentence spoken by all voice previews.
-    static let previewSample = "Hi! This is a quick preview of how this voice sounds."
-
-    /// Audition a specific ElevenLabs voice without changing the selection.
-    /// Uses the free hosted preview when available; otherwise synthesizes.
-    func auditionElevenLabs(_ voice: ElevenLabsClient.Voice) {
-        guard !isPreviewing else { return }
-        isPreviewing = true
-        status = "Previewing \(voice.name)…"
-        Task {
-            do {
-                let data: Data
-                if let preview = voice.previewURL {
-                    (data, _) = try await URLSession.shared.data(from: preview)
-                } else {
-                    let client = ElevenLabsClient(apiKey: apiKey, voiceId: voice.voiceId,
-                                                  modelId: modelId, settings: voiceSettings)
-                    data = try await client.synthesize(text: Self.previewSample)
-                }
-                self.audio.load(data: data)
-                self.status = "Voice preview"
-                self.startNowPlaying("Voice preview")
-            } catch {
-                self.status = error.localizedDescription
-            }
-            self.isPreviewing = false
-        }
-    }
-
     // MARK: History playback
 
     /// Re-play a previously saved narration from history.
@@ -606,6 +562,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    func nextSection() { narrator.session?.next() }
+    func previousSection() { narrator.session?.previous() }
+    func readFaster() { narrator.session?.faster() }
+    func readSlower() { narrator.session?.slower() }
+
     func resetOverlayPosition() {
         ReaderOverlayController.shared.resetPosition()
     }
@@ -625,25 +586,23 @@ final class AppState: ObservableObject {
     /// After an upgrade lands, drop the ONNX runtime so the next read loads
     /// Core ML (~0.4 s), then re-apply the preload policy.
     private func supertonicInstallChanged() {
-        if supertonic.installedBackend == .coreML, supertonicEngine.loadedBackend == .onnx {
+        // Removed, or upgraded past what's loaded → drop the runtime.
+        if let loaded = supertonicEngine.loadedBackend, loaded != supertonic.installedBackend {
             supertonicEngine.unload()
         }
         applyModelMemoryPolicy()
     }
 
-    /// Keep Supertonic resident, or let it unload after the idle timeout.
+    /// Keep Supertonic resident while it's actually reading something (first
+    /// usable engine for a language — e.g. Edge is down or has no voice);
+    /// otherwise let it unload after the idle timeout, even if a fallback,
+    /// test or benchmark loaded it.
     func applyModelMemoryPolicy() {
         let settings = narrator.settings
-        supertonicEngine.idleUnloadAfter = settings.keepModelsWarm ? nil
-            : TimeInterval(settings.unloadAfterMinutes * 60)
-        // Preload only when Supertonic actually reads something: it's first in a
-        // language's chain, or an engine ahead of it is currently unreachable.
-        // As a pure fallback behind a healthy Edge it stays out of memory.
-        let needed = settings.profiles.contains { profile in
-            guard let i = profile.routes.firstIndex(where: { $0.engine == .supertonic }) else { return false }
-            return profile.routes[..<i].allSatisfy { narrator.router.isBenched($0.engine) }
-        }
-        if settings.keepModelsWarm, needed, supertonic.isInstalled, !supertonicEngine.isLoaded {
+        let needed = narrator.isEngineNeeded(.supertonic)
+        let keepWarm = settings.keepModelsWarm && needed
+        supertonicEngine.idleUnloadAfter = keepWarm ? nil : TimeInterval(settings.unloadAfterMinutes * 60)
+        if keepWarm, supertonic.isInstalled, !supertonicEngine.isLoaded {
             Task { try? await supertonicEngine.preload() }
         }
     }
@@ -656,18 +615,21 @@ final class AppState: ObservableObject {
             supertonicEngine,
             AppleSpeechEngine(),
             ElevenLabsSpeechEngine { [unowned self] in
-                .init(apiKey: apiKey, modelId: modelId, settings: voiceSettings, voices: voices)
+                .init(apiKey: apiKey, modelId: modelId, settings: voiceSettings, voices: voices,
+                      defaultVoice: voiceId)
             },
-            OpenAISpeechEngine { [unowned self] in .init(apiKey: openAIKey, model: openAIModel) },
+            OpenAISpeechEngine { [unowned self] in
+                .init(apiKey: openAIKey, model: openAIModel, defaultVoice: openAIVoice)
+            },
         ])
         narrator.onStatus = { [weak self] in self?.status = $0 }
         // Edge just went down → warm Supertonic now so later sections are fast.
-        narrator.onEngineHealthChange = { [weak self] _, _ in self?.applyModelMemoryPolicy() }
-        narrator.saveToHistory = { [weak self] text, audio, routes, characters in
-            self?.saveNarration(text: text, audio: audio, routes: routes, characters: characters)
-        }
+        narrator.onEngineHealthChange = { [weak self] in self?.applyModelMemoryPolicy() }
+        narrator.saveToHistory = { [weak self] in self?.saveNarration($0) }
         return narrator
     }
+
+    private var translationTask: Task<Void, Never>?
 
     func narrate(_ text: String) {
         // Remember the raw text so the clipboard watcher won't repeat it, then
@@ -676,30 +638,45 @@ final class AppState: ObservableObject {
         let spoken = textPreprocessor.process(text)
         guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         audio.stop()
+        translationTask?.cancel()
+        translationTask = nil
 
         guard translateEnabled else {
             narrator.read(spoken, showOverlay: overlayEnabled)
             startNowPlaying(String(spoken.prefix(80)))
             return
         }
+        narrator.stop()
         status = "Translating…"
-        Task {
+        let target = translationTarget
+        translationTask = Task {
+            defer { translationTask = nil }
             do {
                 let translated = try await Translator(apiKey: openAIKey, target: translateLanguage).translate(spoken)
-                narrator.read(translated, showOverlay: overlayEnabled)
+                // A newer narration or Stop superseded this one.
+                guard !Task.isCancelled else { return }
+                narrator.read(translated, language: target, showOverlay: overlayEnabled)
                 startNowPlaying(String(translated.prefix(80)))
             } catch {
-                status = error.localizedDescription
+                if !Task.isCancelled { status = error.localizedDescription }
             }
         }
     }
 
+    /// The translation's language is known, so it's read with that language's
+    /// chain (one of the user's languages if it matches, else a default one).
+    private var translationTarget: ReadingLanguage {
+        let base = translateLanguage.rawValue
+        return narrator.settings.languages.first { $0.base == base }
+            ?? ReadingLanguage(code: ReadingSettings.preferredRegion[base] ?? base)
+    }
+
     /// Store a finished narration. Engines can differ per section, so History
     /// records the one that read most of it; cloud cost is summed per section.
-    private func saveNarration(text: String, audio: Data, routes: [VoiceRoute], characters: [Int]) {
+    private func saveNarration(_ summary: NarrationSummary) {
         var credits = 0.0, cost = 0.0
         var share: [SpeechEngineKind: Int] = [:]
-        for (route, chars) in zip(routes, characters) {
+        for (route, chars) in summary.parts {
             share[route.engine, default: 0] += chars
             switch route.engine {
             case .elevenLabs:
@@ -713,11 +690,17 @@ final class AppState: ObservableObject {
             }
         }
         guard let main = share.max(by: { $0.value < $1.value })?.key,
-              let route = routes.first(where: { $0.engine == main }) else { return }
+              let route = summary.parts.first(where: { $0.route.engine == main })?.route else { return }
+        let model: String
+        switch main {
+        case .elevenLabs: model = modelId
+        case .openAI: model = openAIModel
+        default: model = main.rawValue
+        }
         do {
-            _ = try history.save(audio: audio, text: text, engine: main.engineName,
-                                 voiceId: route.voiceID, voiceName: route.voiceID,
-                                 modelId: main.rawValue, credits: credits,
+            _ = try history.save(audio: summary.audio, text: summary.text, engine: main.engineName,
+                                 voiceId: route.voiceID, voiceName: VoiceNames.display(route),
+                                 modelId: model, credits: credits,
                                  estimatedCost: cost, fileExtension: "m4a")
             history.prune(maxItems: historyLimit)
         } catch {

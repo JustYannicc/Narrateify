@@ -1,68 +1,80 @@
 import AVFoundation
 import OSLog
-import SwiftUI
 
 private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "narration")
 
+/// What one finished narration produced, for History.
+struct NarrationSummary {
+    let text: String
+    let audio: Data
+    /// The engine/voice behind each saved section and its character count.
+    let parts: [(route: VoiceRoute, characters: Int)]
+}
+
+/// How an engine looks from a language's point of view, for Settings.
+enum EngineHealth: Equatable {
+    case ok
+    case needsSetup(String)
+    case unsupported(String)
+    case unreachable
+}
+
 /// Runs a narration end to end: plan sections in the user's languages, route
 /// each section to the first working engine, play it in the reader overlay,
-/// and save the whole thing to History when it's done.
+/// and save what was read to History.
 @MainActor
 final class Narrator: ObservableObject {
     let settings = ReadingSettings()
-    let router: SpeechRouter
     @Published private(set) var session: ReadingSession?
     /// Bumped when an engine is benched/recovers, so health labels refresh.
     @Published private(set) var healthRevision = 0
 
-    /// Saves a finished narration (text, joined audio, per-engine summary).
-    var saveToHistory: ((_ text: String, _ audio: Data, _ routes: [VoiceRoute], _ characters: [Int]) -> Void)?
+    var saveToHistory: ((NarrationSummary) -> Void)?
     /// Reading finished naturally (not stopped) — drives the queue.
     var onFinished: (() -> Void)?
     /// An engine got benched or recovered (lets the app warm up fallbacks).
-    var onEngineHealthChange: ((SpeechEngineKind, Bool) -> Void)?
-    /// Status line updates for the menu bar panel.
+    var onEngineHealthChange: (() -> Void)?
     var onStatus: ((String) -> Void)?
 
+    private let router: SpeechRouter
     private var previewPlayer: AVAudioPlayer?
     /// One audio engine for every narration: building and starting a fresh
     /// AVAudioEngine per keypress cost ~50 ms before the first word.
     private lazy var sectionPlayer = EngineSectionPlayer()
 
-    /// Which route produced each section of one narration (per session, so a
-    /// late history save never mixes narrations).
+    /// Which route produced each section of one narration.
     private final class RouteLog { var routes: [Int: VoiceRoute] = [:] }
 
     init(engines: [SpeechEngine]) {
         router = SpeechRouter(engines: engines)
-        router.onHealthChange = { [weak self] kind, healthy in
+        router.onHealthChange = { [weak self] _, _ in
             self?.healthRevision += 1
-            self?.onEngineHealthChange?(kind, healthy)
+            self?.onEngineHealthChange?()
         }
-        ReaderOverlayController.shared.onClose = { [weak self] in self?.stop() }
     }
 
     var isActive: Bool { session != nil }
 
-    /// Launch-time warm-up of the reader UI and audio engine.
+    /// Launch-time warm-up of the reader UI and audio graph.
     func prewarm() {
         ReaderOverlayController.shared.prewarm()
         _ = sectionPlayer   // build the graph; starting it waits for a narration
-
     }
 
     // MARK: Reading
 
-    func read(_ text: String, showOverlay: Bool = true) {
+    /// Read `text`. Pass `language` when it's already known (translation
+    /// output) to skip detection.
+    func read(_ text: String, language: ReadingLanguage? = nil, showOverlay: Bool = true) {
         let started = Date()
         stop()
-        let sections = ReadingPlanner.plan(text, languages: settings.languages)
-        let planned = Date()
+        let sections = ReadingPlanner.plan(text, languages: language.map { [$0] } ?? settings.languages)
         guard !sections.isEmpty else { return }
+        let planned = Date()
         let routeLog = RouteLog()
         log.notice("read: \(sections.count) sections, languages \(sections.map(\.language.code).joined(separator: ","), privacy: .public)")
 
-        var sessionRef: ReadingSession?
+        weak var sessionRef: ReadingSession?   // weak: the session owns this closure
         let session = ReadingSession(sections: sections, synthesize: { [weak self] section in
             guard let self else { throw CancellationError() }
             let t0 = Date()
@@ -75,32 +87,28 @@ final class Narrator: ObservableObject {
         sessionRef = session
         session.onFinished = { [weak self, weak session] in
             guard let self, let session else { return }
-            self.finish(session, text: text, log: routeLog)
+            self.finish(session, log: routeLog)
         }
         self.session = session
         // Kick off synthesis first; the overlay is built on the next main-queue
         // turn, after section 0's job has already hopped to its engine.
         session.start()
-        let kicked = Date()
         if showOverlay {
-            DispatchQueue.main.async { [weak session] in
-                guard let session, self.session === session else { return }
+            DispatchQueue.main.async { [weak self, weak session] in
+                guard let self, let session, self.session === session else { return }
                 ReaderOverlayController.shared.show(session)
             }
         }
-        log.notice("timing: plan \(Int(planned.timeIntervalSince(started) * 1000)) ms, start \(Int(kicked.timeIntervalSince(planned) * 1000)) ms")
+        log.notice("timing: plan \(Int(planned.timeIntervalSince(started) * 1000)) ms")
         onStatus?("Reading…")
     }
 
     func stop() {
-        session?.stop()
-        session = nil
         previewPlayer?.stop()
+        guard let session else { return }
+        session.stop()
+        self.session = nil
         ReaderOverlayController.shared.hide()
-    }
-
-    func togglePlayPause() {
-        if let session { session.togglePlayPause() }
     }
 
     /// "Supertonic · Edge unavailable" — shown subtly in the overlay header.
@@ -113,7 +121,7 @@ final class Narrator: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
-    private func finish(_ session: ReadingSession, text: String, log: RouteLog) {
+    private func finish(_ session: ReadingSession, log routeLog: RouteLog) {
         if self.session === session {
             self.session = nil
             ReaderOverlayController.shared.hide()
@@ -121,41 +129,52 @@ final class Narrator: ObservableObject {
         }
         onStatus?("Finished")
         onFinished?()
-        // Save after the fact so it never competes with playback for synthesis.
-        Task {
-            guard await session.synthesizeAll() else { return }
-            let parts = session.sections.compactMap { session.speech(for: $0.id) }
-            guard parts.count == session.sections.count,
-                  let audio = try? SectionAudioJoiner.joinToM4A(parts) else { return }
-            let routes = session.sections.compactMap { log.routes[$0.id] }
-            self.saveToHistory?(text, audio, routes, session.sections.map(\.text.count))
+
+        // Save what was actually synthesized (skipped-over sections may be
+        // missing — synthesizing them now would compete with the next read).
+        let saved = session.sections.compactMap { section -> (ReadingSection, SynthesizedSpeech, VoiceRoute)? in
+            guard let speech = session.speech(for: section.id), let route = routeLog.routes[section.id] else { return nil }
+            return (section, speech, route)
+        }
+        guard !saved.isEmpty, let save = saveToHistory else { return }
+        Task.detached(priority: .utility) {
+            guard let audio = try? SectionAudioJoiner.joinToM4A(saved.map(\.1)) else { return }
+            let summary = NarrationSummary(text: saved.map(\.0.text).joined(separator: " "), audio: audio,
+                                           parts: saved.map { ($0.2, $0.0.text.count) })
+            await MainActor.run { save(summary) }
         }
     }
 
-    // MARK: Settings helpers
+    // MARK: Engine status (Settings)
 
     func voices(_ kind: SpeechEngineKind, language: ReadingLanguage) async -> [VoiceOption] {
         await router.engine(kind)?.voices(for: language) ?? []
     }
 
-    /// One short status line for an engine in a language's chain.
-    func health(_ kind: SpeechEngineKind, language: ReadingLanguage) -> (String, Color) {
-        _ = healthRevision
-        guard let engine = router.engine(kind) else { return ("Not available in this build", .secondary) }
-        if !engine.supports(language) {
-            switch kind {
-            case .elevenLabs, .openAI: return ("Add an API key in Settings → Cloud", .orange)
-            case .supertonic: return ("Model not downloaded — see Engines", .orange)
-            default: return ("Doesn't speak \(language.displayName)", .orange)
-            }
-        }
-        if router.isBenched(kind) { return ("Unreachable — skipped for now", .red) }
-        return ("", .secondary)
+    func health(_ kind: SpeechEngineKind, language: ReadingLanguage) -> EngineHealth {
+        guard let engine = router.engine(kind) else { return .needsSetup("Not available in this build") }
+        if let reason = engine.unavailableReason { return .needsSetup(reason) }
+        if !engine.supports(language) { return .unsupported("Doesn't speak \(language.displayName)") }
+        return router.isBenched(kind) ? .unreachable : .ok
     }
+
+    func isBenched(_ kind: SpeechEngineKind) -> Bool { router.isBenched(kind) }
+
+    func retryEngines() { router.resetHealth() }
+
+    /// Would any of the user's languages actually reach this engine right now?
+    func isEngineNeeded(_ kind: SpeechEngineKind) -> Bool {
+        settings.profiles.contains { router.wouldReach(kind, in: $0) }
+    }
+
+    // MARK: Test / preview / benchmark
 
     static let samples: [String: String] = [
         "en": "Here's a quick test of how this voice sounds.",
         "de": "Das ist ein kurzer Test, wie diese Stimme klingt.",
+        "fr": "Voici un petit test pour entendre cette voix.",
+        "es": "Esta es una prueba rápida de cómo suena esta voz.",
+        "it": "Questa è una breve prova di come suona questa voce.",
     ]
 
     private func sample(for language: ReadingLanguage) -> String {
@@ -179,20 +198,22 @@ final class Narrator: ObservableObject {
     }
 
     /// Time-to-audio for one engine in each reading language, e.g.
-    /// "EN 310 ms · DE 340 ms". Uses the voice from that language's chain when
-    /// the engine is in it. A cold local model reports its load time separately.
+    /// "EN 310 ms · DE 340 ms". Paid cloud engines are skipped, and a local
+    /// model loaded only for the benchmark is unloaded again afterwards.
     func benchmark(_ kind: SpeechEngineKind) async -> String {
         guard let engine = router.engine(kind) else { return "Not available" }
+        if kind == .elevenLabs || kind == .openAI { return "Not measured (paid per request)" }
+        if let reason = engine.unavailableReason { return reason }
+        let supertonic = engine as? SupertonicEngine
+        let wasLoaded = supertonic?.isLoaded ?? true
+        defer { if !wasLoaded { supertonic?.unload() } }
+
         var parts: [String] = []
         for language in settings.languages {
-            guard engine.supports(language) else { parts.append("\(language.base.uppercased()) —"); continue }
-            let configured = settings.profile(for: language).routes.first { $0.engine == kind }?.voiceID
-            let voiceID: String
-            if let configured, !configured.isEmpty {
-                voiceID = configured
-            } else {
-                voiceID = await engine.voices(for: language).first?.id ?? ""
-            }
+            let tag = language.base.uppercased()
+            guard engine.supports(language) else { parts.append("\(tag) —"); continue }
+            let configured = settings.profile(for: language).routes.first { $0.engine == kind }?.voiceID ?? ""
+            let voiceID = configured.isEmpty ? (await engine.voices(for: language).first?.id ?? "") : configured
             let text = sample(for: language)
             do {
                 var t0 = Date()
@@ -201,11 +222,11 @@ final class Narrator: ObservableObject {
                 t0 = Date()
                 _ = try await engine.synthesize(text, language: language, voiceID: voiceID)
                 let warm = Date().timeIntervalSince(t0)
-                var label = "\(language.base.uppercased()) \(Int(warm * 1000)) ms"
+                var label = "\(tag) \(Int(warm * 1000)) ms"
                 if first > warm * 2, first - warm > 0.3 { label += " (first \(Int(first * 1000)) ms)" }
                 parts.append(label)
             } catch {
-                parts.append("\(language.base.uppercased()) failed")
+                parts.append("\(tag) failed")
             }
         }
         return parts.joined(separator: " · ")

@@ -12,7 +12,7 @@ rebuilt around fast engines, multilingual reading, and a section-based reader.
   - **Edge TTS**: Microsoft's neural Read Aloud voices (the same ones SuperCmd
     and the Read Aloud extension use). Free and online.
   - **Supertonic 3**: on-device and multilingual. It runs on the CPU through ONNX
-    Runtime and needs about 400 MB of RAM while loaded.
+    Runtime and needs about 120 MB of RAM while loaded (Core ML decoder on macOS 15+).
   - **Apple voices**: always available.
   - **ElevenLabs** and **OpenAI**: optional.
   - Kokoro and Chatterbox are gone. They needed a system Python and several GB of
@@ -31,8 +31,9 @@ rebuilt around fast engines, multilingual reading, and a section-based reader.
     failure latency on every sentence.
 - **A reader overlay instead of a scrubber.**
   - Text is split into sensible sections, and the spoken word is highlighted.
-  - ←/→ jumps a section and space plays/pauses.
-  - ↑/↓ changes speed (0.5–3×, applied at playback so it's identical for every
+  - ←/→ jumps a section and space plays/pauses (when the reader has focus;
+    globally via ⌃⌥[ / ⌃⌥]).
+  - ↑/↓ changes speed (globally ⌃⌥= / ⌃⌥-) (0.5–3×, applied at playback so it's identical for every
     engine and changes instantly).
 - **Fast start.**
   - The first sentence is synthesized on its own and starts playing while the
@@ -50,8 +51,8 @@ rebuilt around fast engines, multilingual reading, and a section-based reader.
 | `⌃⌥V` | Read clipboard |
 | `⌃⌥N` | Quick Narrate window |
 | `⌃⌥Space` | Play / pause |
-| `⌃⌥←` / `⌃⌥→` | Previous / next section |
-| `⌃⌥↑` / `⌃⌥↓` | Faster / slower |
+| `⌃⌥[` / `⌃⌥]` | Previous / next section |
+| `⌃⌥=` / `⌃⌥-` | Faster / slower |
 | `⌃⌥X` | Stop |
 
 ## Build
@@ -65,7 +66,7 @@ open Narrateify.xcodeproj   # ⌘R
 macOS 14+, Xcode 15+. On first use, grant **Accessibility** (to read the
 selection) and **Screen Recording** (for OCR), then relaunch.
 
-Supertonic downloads about 400 MB of model files from Hugging Face the first time
+Supertonic downloads about 220 MB of model files (about 400 MB on macOS 14) from Hugging Face the first time
 you enable it (Settings → Engines). They're stored in
 `~/Library/Application Support/Narrateify/Models/`.
 

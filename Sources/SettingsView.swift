@@ -5,7 +5,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            ReadingSettingsView(settings: state.narrator.settings)
+            ReadingSettingsView(narrator: state.narrator)
                 .tabItem { Label("Reading", systemImage: "character.bubble") }
             EnginesView()
                 .tabItem { Label("Engines", systemImage: "waveform") }

@@ -10,7 +10,7 @@ enum SettingsSnapshot {
     static func runIfRequested(state: AppState) {
         guard let dir = UserDefaults.standard.string(forKey: "snapshotSettings") else { return }
         let tabs: [(String, AnyView)] = [
-            ("reading", AnyView(ReadingSettingsView(settings: state.narrator.settings))),
+            ("reading", AnyView(ReadingSettingsView(narrator: state.narrator))),
             ("engines", AnyView(EnginesView())),
             ("cloud", AnyView(CloudView())),
             ("general", AnyView(GeneralView())),
@@ -19,6 +19,7 @@ enum SettingsSnapshot {
             render(view.environmentObject(state), size: NSSize(width: 620, height: 1400),
                    to: URL(fileURLWithPath: dir).appendingPathComponent("settings-\(name).png"))
         }
+        NSApp.terminate(nil)   // a CLI snapshot run should exit when done
     }
 
     @MainActor

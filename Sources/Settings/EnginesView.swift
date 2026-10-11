@@ -7,18 +7,17 @@ struct EnginesView: View {
     @EnvironmentObject var state: AppState
     @State private var measured: [SpeechEngineKind: String] = [:]
     @State private var measuring = false
-    @State private var footprint = MemoryFootprint.current()
 
     var body: some View {
         Form {
             Section {
                 HStack {
-                    Text("Narrateify is using \(MemoryFootprint.format(footprint)) of memory")
+                    MemoryLabel()
                     Spacer()
                     Button(measuring ? "Measuring…" : "Measure speed") { measure() }
                         .disabled(measuring)
                 }
-                Text("Measure runs a sample sentence through every engine in each of your languages and shows the real time until audio is ready on this Mac.")
+                Text("Measure runs a sample sentence through each free engine in each of your languages and shows the real time until audio is ready on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(EngineCatalog.cards) { card in
@@ -30,12 +29,6 @@ struct EnginesView: View {
             }
         }
         .formStyle(.grouped)
-        .task {
-            while !Task.isCancelled {
-                footprint = MemoryFootprint.current()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
     }
 
     private func measure() {
@@ -138,10 +131,7 @@ private struct SupertonicControls: View {
                 }
                 Spacer()
                 Text(MemoryFootprint.format(store.diskUsage)).foregroundStyle(.secondary)
-                Button("Remove", role: .destructive) {
-                    state.supertonicEngine.unload()
-                    try? store.uninstall()
-                }
+                Button("Remove", role: .destructive) { removeModel() }
             case .failed(let message):
                 Text(message).foregroundStyle(.red).lineLimit(2)
                 Spacer()
@@ -152,6 +142,15 @@ private struct SupertonicControls: View {
 }
 
 private extension SupertonicControls {
+    /// Unload first (on the engine's queue) so nothing is reading the files
+    /// while they're deleted.
+    func removeModel() {
+        Task {
+            await state.supertonicEngine.unloadAndWait()
+            do { try state.supertonic.uninstall() } catch { state.status = error.localizedDescription }
+        }
+    }
+
     var supertonicStatus: String {
         let backend = state.supertonic.installedBackend == .coreML ? "Core ML" : "ONNX"
         switch state.supertonicEngine.loadedBackend {
@@ -167,16 +166,32 @@ private struct EdgeControls: View {
 
     var body: some View {
         HStack {
-            if state.narrator.router.isBenched(.edge) {
+            if state.narrator.isBenched(.edge) {
                 Label("Unreachable — using fallbacks for now", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 Spacer()
-                Button("Retry now") { state.narrator.router.resetHealth() }
+                Button("Retry now") { state.narrator.retryEngines() }
             } else {
                 Label("Reachable", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 Spacer()
             }
         }
+    }
+}
+
+/// Polls the footprint in its own view so the rest of the tab doesn't redraw.
+private struct MemoryLabel: View {
+    @State private var text = MemoryFootprint.format(MemoryFootprint.current())
+
+    var body: some View {
+        Text("Narrateify is using \(text) of memory")
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    let next = MemoryFootprint.format(MemoryFootprint.current())
+                    if next != text { text = next }
+                }
+            }
     }
 }
 

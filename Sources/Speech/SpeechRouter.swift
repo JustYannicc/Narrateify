@@ -32,6 +32,7 @@ final class SpeechRouter {
 
     private let engines: [SpeechEngineKind: SpeechEngine]
     private var benchedUntil: [SpeechEngineKind: Date] = [:]
+    private var benchTimers: [SpeechEngineKind: Timer] = [:]
     var benchDuration: TimeInterval = 10 * 60
 
     /// Called whenever an engine gets benched or recovers, for status display.
@@ -52,7 +53,40 @@ final class SpeechRouter {
     func resetHealth() {
         let kinds = Array(benchedUntil.keys)
         benchedUntil.removeAll()
+        benchTimers.values.forEach { $0.invalidate() }
+        benchTimers.removeAll()
         kinds.forEach { onHealthChange?($0, true) }
+    }
+
+    /// Would routing actually try this engine for `language` right now
+    /// (registered, set up, speaks it, not benched)?
+    func isUsable(_ kind: SpeechEngineKind, for language: ReadingLanguage) -> Bool {
+        guard let engine = engines[kind] else { return false }
+        return engine.unavailableReason == nil && engine.supports(language) && !isBenched(kind)
+    }
+
+    /// True if a section in this profile's language would reach `kind`: every
+    /// route ahead of it is currently unusable.
+    func wouldReach(_ kind: SpeechEngineKind, in profile: LanguageProfile) -> Bool {
+        guard let i = profile.routes.firstIndex(where: { $0.engine == kind }) else { return false }
+        return profile.routes[..<i].allSatisfy { !isUsable($0.engine, for: profile.language) }
+    }
+
+    private func bench(_ kind: SpeechEngineKind) {
+        benchedUntil[kind] = Date().addingTimeInterval(benchDuration)
+        benchTimers[kind]?.invalidate()
+        // Tell observers when the bench lapses so "unreachable" labels and the
+        // preload policy don't go stale.
+        let timer = Timer(timeInterval: benchDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.benchTimers[kind] = nil
+                if self.benchedUntil.removeValue(forKey: kind) != nil { self.onHealthChange?(kind, true) }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        benchTimers[kind] = timer
+        onHealthChange?(kind, false)
     }
 
     func synthesize(_ section: ReadingSection, profile: LanguageProfile) async throws -> Result {
@@ -62,6 +96,10 @@ final class SpeechRouter {
         let healthy = candidates.filter { !isBenched($0.engine) }
         for route in healthy.isEmpty ? candidates : healthy {
             guard let engine = engines[route.engine] else { continue }
+            if let reason = engine.unavailableReason {
+                failures.append((route, SpeechEngineError.notInstalled(reason)))
+                continue
+            }
             guard engine.supports(section.language) else {
                 failures.append((route, SpeechEngineError.unsupportedLanguage(section.language.code)))
                 continue
@@ -78,11 +116,11 @@ final class SpeechRouter {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                // A skipped/stopped section cancels its request; that says
+                // nothing about the engine's health.
+                if Task.isCancelled { throw CancellationError() }
                 failures.append((route, error))
-                if case SpeechEngineError.serviceUnavailable = error {
-                    benchedUntil[route.engine] = Date().addingTimeInterval(benchDuration)
-                    onHealthChange?(route.engine, false)
-                }
+                if case SpeechEngineError.serviceUnavailable = error { bench(route.engine) }
             }
         }
         throw failures.last?.1 ?? SpeechEngineError.unsupportedLanguage(section.language.code)
