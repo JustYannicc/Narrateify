@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import OSLog
 
-private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "narration")
+private let log = Logger(category: "narration")
 
 /// Plays a narration section by section: synthesizes on demand (see
 /// `SectionPipeline` for the latency rules), highlights the spoken word, and

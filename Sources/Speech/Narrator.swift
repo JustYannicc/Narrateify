@@ -1,7 +1,7 @@
 import AVFoundation
 import OSLog
 
-private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "narration")
+private let log = Logger(category: "narration")
 
 /// What one finished narration produced, for History.
 struct NarrationSummary {

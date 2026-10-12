@@ -36,6 +36,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // so the first shortcut press reads immediately.
         Task { @MainActor in AppState.shared.warmUpEngines() }
 
+        // Crash reports + Send Feedback. After the hotkeys, so its disk I/O
+        // never holds them up.
+        FeedbackReporter.start()
+        #if DEBUG
+        // `-sendTestFeedback "…"`: send one report and quit (checks the DSN end to end).
+        if let message = UserDefaults.standard.string(forKey: "sendTestFeedback") {
+            Task { @MainActor in
+                let result = await AppState.shared.sendFeedback(message)
+                print("feedback: \(result)")
+                exit(result == .sent ? 0 : 1)
+            }
+            return
+        }
+        #endif
+
         #if DEBUG
         // `-narrateText "…"` reads text on launch — lets the full pipeline be
         // exercised without Accessibility permission or a hotkey.

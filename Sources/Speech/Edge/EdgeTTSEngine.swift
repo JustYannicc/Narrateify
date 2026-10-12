@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let log = Logger(subsystem: "com.narrateify.Narrateify", category: "edge")
+private let log = Logger(category: "edge")
 
 /// Microsoft Edge "Read Aloud" voices over the browser's WebSocket API.
 /// MP3 out; real word timings from WordBoundary metadata. Every failure to

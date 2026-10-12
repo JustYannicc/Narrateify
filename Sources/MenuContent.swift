@@ -74,6 +74,12 @@ struct MenuContent: View {
             })
             .animation(.snappy, value: state.settingsWindowOpen)
 
+            if FeedbackReporter.isConfigured {
+                Button { FeedbackWindow.shared.show() } label: {
+                    Label("Send Feedback…", systemImage: "bubble.left")
+                }
+            }
+
             Button(role: .destructive) {
                 NSApplication.shared.terminate(nil)
             } label: {

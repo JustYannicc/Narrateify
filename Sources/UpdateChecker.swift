@@ -26,9 +26,7 @@ final class UpdateChecker: ObservableObject {
     private(set) var pendingDownload: URL?
 
     /// The running app's marketing version, e.g. "1.0".
-    var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-    }
+    var currentVersion: String { Bundle.main.shortVersion }
 
     private struct Release: Decodable {
         let tag_name: String
