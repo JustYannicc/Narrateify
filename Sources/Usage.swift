@@ -90,7 +90,7 @@ struct UsageSection: View {
             }
 
             Text("Estimates are for cloud engines using your configured rates. "
-                 + "Apple and the local models (Kokoro, Chatterbox) are free.")
+                 + "Apple, Edge and Supertonic are free.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -33,3 +33,4 @@ dist/
 venv/
 *.pyc
 __pycache__/
+Narrateify.xcodeproj/

@@ -94,18 +94,12 @@ final class LogicTests: XCTestCase {
         XCTAssertNil(Keychain.get(account: account))
     }
 
-    // MARK: AppleTTSClient helpers
-
-    func testAppleDisplayNameFallsBackToIdentifier() {
-        // An identifier that doesn't resolve returns itself.
-        XCTAssertEqual(AppleTTSClient.displayName(for: "not.a.real.voice"), "not.a.real.voice")
-    }
+    // MARK: Apple engine
 
     func testAppleDefaultVoiceIsResolvable() {
-        // On a normal macOS install there's at least one system voice; on a
-        // barebones CI image there may be none, so only assert when some exist.
-        guard !AppleTTSClient.installedVoices().isEmpty else { return }
-        XCTAssertFalse(AppleTTSClient.defaultVoiceIdentifier().isEmpty)
+        // On a normal macOS install there's at least one English system voice.
+        guard AppleSpeechEngine().supports(.englishUS) else { return }
+        XCTAssertNotNil(AppleSpeechEngine.defaultVoice(for: .englishUS))
     }
 
     // MARK: TextPreprocessor
@@ -147,29 +141,6 @@ final class LogicTests: XCTestCase {
     func testPronunciationRulePartialMatch() {
         let rule = PronunciationRule(from: "cat", to: "dog", wholeWord: false)
         XCTAssertEqual(rule.apply(to: "category"), "dogegory")
-    }
-
-    // MARK: LanguageDetector
-
-    func testLanguageDetectionEnglishAndGerman() {
-        XCTAssertEqual(LanguageDetector.detectBaseCode("The quick brown fox jumps over the lazy dog."), "en")
-        XCTAssertEqual(LanguageDetector.detectBaseCode("Der schnelle braune Fuchs springt über den faulen Hund."), "de")
-    }
-
-    func testLanguageDetectionTooShortIsNil() {
-        XCTAssertNil(LanguageDetector.detectBaseCode("hi"))
-    }
-
-    // MARK: AudioJoiner
-
-    func testJoinSingleChunkReturnsItself() {
-        let data = Data([1, 2, 3])
-        XCTAssertEqual(AudioJoiner.join([data], fileExtension: "mp3"), data)
-    }
-
-    func testJoinMP3Concatenates() {
-        let a = Data([1, 2]); let b = Data([3, 4])
-        XCTAssertEqual(AudioJoiner.join([a, b], fileExtension: "mp3"), Data([1, 2, 3, 4]))
     }
 
     // MARK: Citation cleanup (scientific papers)

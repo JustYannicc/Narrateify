@@ -10,6 +10,14 @@ options:
     - tr
     - Base
 
+packages:
+  OnnxRuntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
+    exactVersion: 1.24.2
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa.git
+    from: 9.29.2
+
 targets:
   Narrateify:
     type: application
@@ -17,6 +25,14 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources
+        excludes:
+          - Vendor/Sonic/README.md
+          - Vendor/Sonic/LICENSE
+    dependencies:
+      - package: OnnxRuntime
+        product: onnxruntime
+      - package: Sentry
+        product: Sentry
     info:
       path: Info.plist
       properties:
@@ -26,6 +42,12 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
+        # Feedback + crash reports go to Sentry only when this is non-empty.
+        SentryDSN: $(SENTRY_DSN)
+        # malloc's large-allocation cache otherwise keeps ~90 MB of freed ONNX
+        # Runtime init buffers resident (and ~440 MB after unloading Supertonic).
+        LSEnvironment:
+          MallocLargeCache: "0"
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSHumanReadableCopyright: "Copyright © 2026. All rights reserved."
         CFBundleLocalizations:
@@ -43,14 +65,18 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.Narrateify
         PRODUCT_NAME: Narrateify
-        MARKETING_VERSION: "1.1.2"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "2.0.0"
+        CURRENT_PROJECT_VERSION: "8"
+        # Sentry DSN for Send Feedback + crash reports. A DSN is a public client
+        # key; `xcodebuild SENTRY_DSN=` overrides it, empty turns Sentry off.
+        SENTRY_DSN: ""
         INFOPLIST_FILE: Info.plist
         # Keep Hardened Runtime; App Sandbox is intentionally omitted (no
         # entitlements file -> unsandboxed, required for cross-app keystrokes
         # and launching /usr/sbin/screencapture).
         ENABLE_HARDENED_RUNTIME: true
         SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Narrateify-Bridging-Header.h
         # Allow ad-hoc local builds without a development team.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"

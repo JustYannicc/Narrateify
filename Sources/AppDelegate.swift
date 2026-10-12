@@ -32,17 +32,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in OnboardingWindow.showIfNeeded() }
         }
 
-        // If the last narration used an installed local model, bring its server
-        // up now so it's ready to narrate immediately.
-        Task { @MainActor in AppState.shared.autoStartLastServerIfNeeded() }
+        // Warm the engines (Edge voice list, Supertonic model if kept loaded)
+        // so the first shortcut press reads immediately.
+        Task { @MainActor in AppState.shared.warmUpEngines() }
+
+        // Crash reports + Send Feedback. After the hotkeys, so its disk I/O
+        // never holds them up.
+        FeedbackReporter.start()
+        #if DEBUG
+        // `-sendTestFeedback "…"`: send one report and quit (checks the DSN end to end).
+        if let message = UserDefaults.standard.string(forKey: "sendTestFeedback") {
+            Task { @MainActor in
+                let result = await AppState.shared.sendFeedback(message)
+                print("feedback: \(result)")
+                exit(result == .sent ? 0 : 1)
+            }
+            return
+        }
+        #endif
+
+        #if DEBUG
+        // `-narrateText "…"` reads text on launch — lets the full pipeline be
+        // exercised without Accessibility permission or a hotkey.
+        if let text = UserDefaults.standard.string(forKey: "narrateText"), !text.isEmpty {
+            // `-narrateDelay 5` waits first, to measure warm (post-preload) latency.
+            let delay = UserDefaults.standard.double(forKey: "narrateDelay")
+            Task { @MainActor in
+                // Mimic a hotkey: prewarm, then ~200 ms of "selection capture".
+                try? await Task.sleep(for: .seconds(max(0, delay - 0.2)))
+                AppState.shared.narrator.prewarmEngines()
+                try? await Task.sleep(for: .milliseconds(200))
+                AppState.shared.narrate(text)
+            }
+        }
+        Task { @MainActor in SettingsSnapshot.runIfRequested(state: AppState.shared) }
+        #endif
 
         // Quietly check GitHub for a newer release in the background.
         Task { @MainActor in await AppState.shared.updateChecker.check() }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        // Don't leave orphaned local-server processes behind.
-        MainActor.assumeIsolated { AppState.shared.shutdownServers() }
     }
 
     private func registerHotKeys() {

@@ -8,7 +8,7 @@ import SwiftUI
 final class UpdateChecker: ObservableObject {
 
     /// The public repository, used for the API check and the "Releases" link.
-    static let repo = "yasarkaancan/Narrateify"
+    static let repo = "JustYannicc/Narrateify"
     static var releasesURL: URL { URL(string: "https://github.com/\(repo)/releases")! }
 
     enum State: Equatable {
@@ -26,9 +26,7 @@ final class UpdateChecker: ObservableObject {
     private(set) var pendingDownload: URL?
 
     /// The running app's marketing version, e.g. "1.0".
-    var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-    }
+    var currentVersion: String { Bundle.main.shortVersion }
 
     private struct Release: Decodable {
         let tag_name: String

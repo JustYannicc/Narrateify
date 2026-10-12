@@ -42,10 +42,6 @@ struct MenuContent: View {
             }
             .keyboardShortcut("n", modifiers: [.control, .option])
 
-            Button { state.readClipboardHighlighted() } label: {
-                Label("Read Clipboard (Highlighted)", systemImage: "text.line.first.and.arrowtriangle.forward")
-            }
-
             Button { state.narrateFile() } label: {
                 Label("Narrate File…", systemImage: "doc.text")
             }
@@ -60,7 +56,7 @@ struct MenuContent: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .keyboardShortcut("x", modifiers: [.control, .option])
-            .disabled(!state.audio.hasAudio)
+            .disabled(!state.audio.hasAudio && !state.isReading)
 
             Divider().padding(.vertical, 2)
 
@@ -77,6 +73,12 @@ struct MenuContent: View {
                 NSApp.activate(ignoringOtherApps: true)
             })
             .animation(.snappy, value: state.settingsWindowOpen)
+
+            if FeedbackReporter.isConfigured {
+                Button { FeedbackWindow.shared.show() } label: {
+                    Label("Send Feedback…", systemImage: "bubble.left")
+                }
+            }
 
             Button(role: .destructive) {
                 NSApplication.shared.terminate(nil)
