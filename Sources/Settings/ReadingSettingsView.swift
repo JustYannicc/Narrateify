@@ -80,7 +80,7 @@ private struct LanguageChainSection: View {
             }
             HStack {
                 Menu("Add fallback") {
-                    ForEach(SpeechEngineKind.allCases.filter { kind in
+                    ForEach(SpeechEngineKind.chainable.filter { kind in
                         !profile.routes.contains { $0.engine == kind }
                     }) { kind in
                         Button(kind.label) { insert(kind, at: profile.routes.count) }
@@ -177,7 +177,7 @@ private struct RouteRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 if index == 0 {
                     Picker("Read with", selection: Binding(get: { route.engine }, set: onPickEngine)) {
-                        ForEach(SpeechEngineKind.allCases) { Text($0.label).tag($0) }
+                        ForEach(SpeechEngineKind.chainable) { Text($0.label).tag($0) }
                     }
                     .fixedSize()
                 } else {
@@ -240,7 +240,7 @@ enum VoiceNames {
             return EdgeVoice(shortName: route.voiceID, locale: locale).displayName
         case .supertonic:
             return SupertonicEngine.voices.first { $0.id == route.voiceID }?.name ?? route.voiceID
-        case .elevenLabs, .openAI:
+        case .elevenLabs, .openAI, .qwen3:
             return route.voiceID
         }
     }

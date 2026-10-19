@@ -4,8 +4,11 @@ import Foundation
 /// local API. The app is launched lazily, on the first tool call.
 enum MCPServer {
     private static let voiceProperties: [String: Any] = [
-        "voice": ["type": "string", "description": "Voice id or name from list_voices (e.g. \"de-DE-KatjaNeural\", \"F1\", \"Anna\"). Pins the language to the voice's."],
-        "engine": ["type": "string", "description": "edge, supertonic, apple, elevenLabs or openAI. Tried first; the language's fallback chain follows unless strict."],
+        "voice": ["type": "string", "description": "Voice id or name from list_voices (e.g. \"de-DE-KatjaNeural\", \"F1\", \"Anna\"), or for qwen3 an absolute path to a reference clip to clone. Pins the language to the voice's."],
+        "engine": ["type": "string", "description": "edge, supertonic, apple, elevenLabs, openAI or qwen3. Tried first; the language's fallback chain follows unless strict."],
+        "model": ["type": "string", "description": "Local model id from list_models, e.g. \"qwen3-tts-1.7b\" (the bigger, higher-quality model for voiceovers). Picks its engine. On-demand models are strict unless fallback is true."],
+        "fallback": ["type": "boolean", "description": "On-demand models: fall back down the language's chain if the model can't run."],
+        "install": ["type": "boolean", "description": "Download the model first if it isn't installed (Qwen3 is ~2.9 GB)."],
         "language": ["type": "string", "description": "BCP-47 or base code (\"en\", \"de-DE\"). Skips language detection."],
         "strict": ["type": "boolean", "description": "Only the given engine/voice, no fallback."],
     ]
@@ -43,6 +46,12 @@ enum MCPServer {
         ["name": "list_voices",
          "description": "Voices usable right now, per language (only engines that are set up and reachable).",
          "inputSchema": schema(["engine": voiceProperties["engine"]!, "language": voiceProperties["language"]!])],
+        ["name": "list_models",
+         "description": "Local models: which are installed, which can be installed, download size, memory, quality (0–10), and whether they're on-demand (used only when asked for).",
+         "inputSchema": schema([:])],
+        ["name": "install_model",
+         "description": "Download a local model (e.g. qwen3-tts-1.7b). Blocks until done; can take minutes.",
+         "inputSchema": schema(["model": ["type": "string"]], required: ["model"])],
         ["name": "list_engines",
          "description": "Engines and their health per reading language.",
          "inputSchema": schema([:])],
@@ -125,6 +134,11 @@ enum MCPServer {
             if let engine = args["engine"] as? String { query["engine"] = engine }
             if let language = args["language"] as? String { query["language"] = language }
             return JSONOutput.pretty(try await Client.json("GET", "v1/voices", query: query))
+        case "list_models":
+            return JSONOutput.pretty(try await Client.json("GET", "v1/models"))
+        case "install_model":
+            guard let model = args["model"] as? String else { throw Client.Failure(message: "model is required") }
+            return JSONOutput.pretty(try await Client.json("POST", "v1/models/install", body: ["model": model]))
         case "list_engines":
             return JSONOutput.pretty(try await Client.json("GET", "v1/engines"))
         case "status":

@@ -40,5 +40,9 @@ enum EngineCatalog {
                    languages: "50+",
                    privacy: "Text sent to OpenAI",
                    blurb: "Natural multilingual cloud voices. Paid; needs an API key."),
+        EngineCard(kind: .qwen3, speed: 3, quality: 9, ram: "~3 GB while loaded (own process, freed when idle)",
+                   disk: "~2.9 GB", languages: "10 (incl. EN, DE)",
+                   privacy: "Fully on-device",
+                   blurb: "Alibaba's Qwen3-TTS 1.7B on MLX: the big model for voiceovers, not everyday reading. Never in a reading chain; only used when a CLI/API/MCP call asks for it (model qwen3-tts-1.7b). Loads on demand (a few seconds), about real time on Apple silicon, and quits after the idle timeout. Voices are cloned from the Supertonic voices or from your own clip. Apache-2.0. Apple silicon + macOS 15."),
     ]
 }

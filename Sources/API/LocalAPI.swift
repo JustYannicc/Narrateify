@@ -10,6 +10,9 @@ private let log = Logger(category: "api")
 ///   GET  /v1/status                      app version, reading?, languages + chains
 ///   GET  /v1/engines                     engines and their health per language
 ///   GET  /v1/voices?engine=&language=    voices you can pass as `voice`
+///   GET  /v1/models                      local models: installed, installable, size, quality
+///   POST /v1/models/install {model}      download one (blocks until done; poll /v1/models)
+///   POST /v1/models/uninstall {model}
 ///   POST /v1/speak       {text, …}       read aloud in the reader, like the hotkey
 ///   POST /v1/stop                        stop reading
 ///   POST /v1/synthesize  {text, …}       audio file / bytes / WAV stream
@@ -77,7 +80,17 @@ final class LocalAPI {
                 state.stop()
                 response.json(["ok": true])
             case ("POST", "/v1/synthesize"):             try await synthesize(try decode(request.body), response)
-            case (_, "/v1/status"), (_, "/v1/engines"), (_, "/v1/voices"),
+            case ("GET", "/v1/models"):                  response.json(state.models)
+            case ("POST", "/v1/models/install"):
+                let engine = try modelEngine(try decode(request.body) as ModelRef)
+                try await state.installModel(for: engine)
+                response.json(state.models.first { $0.engine == engine.rawValue })
+            case ("POST", "/v1/models/uninstall"):
+                let engine = try modelEngine(try decode(request.body) as ModelRef)
+                try await state.uninstallModel(for: engine)
+                response.json(["ok": true])
+            case (_, "/v1/models"), (_, "/v1/models/install"), (_, "/v1/models/uninstall"),
+                 (_, "/v1/status"), (_, "/v1/engines"), (_, "/v1/voices"),
                  (_, "/v1/speak"), (_, "/v1/stop"), (_, "/v1/synthesize"):
                 throw APIError(405, "Wrong method for \(request.path)")
             default:
@@ -121,10 +134,12 @@ final class LocalAPI {
         let name: String
         let local: Bool
         let cloudPaid: Bool
+        /// Never in a reading chain; only used when a call asks for it.
+        let onDemand: Bool
         /// Per reading language: "ok", "unreachable", or why not.
         let health: [String: String]
 
-        enum CodingKeys: String, CodingKey { case id, name, local, cloudPaid = "cloud_paid", health }
+        enum CodingKeys: String, CodingKey { case id, name, local, cloudPaid = "cloud_paid", onDemand = "on_demand", health }
     }
 
     private func engines() -> [Engine] {
@@ -138,7 +153,7 @@ final class LocalAPI {
                 }
             }
             return Engine(id: kind.rawValue, name: kind.label, local: kind.isLocal, cloudPaid: kind.isCloudPaid,
-                          health: health)
+                          onDemand: kind.isOnDemand, health: health)
         }
     }
 
@@ -169,12 +184,28 @@ final class LocalAPI {
         return out
     }
 
+    private struct ModelRef: Decodable { var model: String? }
+
+    private func modelEngine(_ ref: ModelRef) throws -> SpeechEngineKind {
+        guard let id = ref.model, let engine = state.modelEngine(id) else {
+            throw APIError(400, "Unknown model \"\(ref.model ?? "")\". Models: \(state.models.map(\.id).joined(separator: ", "))")
+        }
+        return engine
+    }
+
     struct Pick: Decodable {
         var text: String?
         var language: String?
         var engine: String?
+        /// A local model id from /v1/models ("qwen3-tts-1.7b"); picks its engine.
+        var model: String?
         var voice: String?
+        /// Only that engine/voice. Default: off, but on for on-demand models.
         var strict: Bool?
+        /// On-demand models: allow falling back down the chain (= strict false).
+        var fallback: Bool?
+        /// Download the model first if it's missing (can be GBs).
+        var install: Bool?
         /// Run the app's text cleanup + pronunciation rules (default on).
         var clean: Bool?
     }
@@ -214,6 +245,8 @@ final class LocalAPI {
             let text: String
             let language: String
             let engine: String
+            /// The local model behind `engine`, when it is one.
+            let model: String?
             let voice: String
             let start: Double
             let duration: Double
@@ -312,6 +345,7 @@ final class LocalAPI {
                           duration: Double, speed: Float, choice: VoiceChoice?, words: Bool) -> Rendered {
         // Fell back = a section wasn't read by the engine that should have
         // gone first: the one asked for, else the top of that language's chain.
+        let models = Dictionary(state.models.map { ($0.engine, $0.id) }, uniquingKeysWith: { a, _ in a })
         let fellBack = sections.contains { s in
             let first = choice?.route?.engine ?? narrator.settings.profile(for: s.section.language).routes.first?.engine
             return first.map { $0 != s.route.engine } ?? false
@@ -321,7 +355,7 @@ final class LocalAPI {
             speed: speed, fellBack: fellBack,
             sections: sections.map {
                 .init(text: $0.section.text, language: $0.section.language.code, engine: $0.route.engine.rawValue,
-                      voice: $0.route.voiceID, start: ms($0.start), duration: ms($0.duration))
+                      model: models[$0.route.engine.rawValue], voice: $0.route.voiceID, start: ms($0.start), duration: ms($0.duration))
             },
             words: words ? sections.flatMap { s in
                 s.words.map { w in
@@ -387,6 +421,13 @@ final class LocalAPI {
     private func choice(_ pick: Pick) async throws -> VoiceChoice? {
         var language = try pick.language.map(readingLanguage)
         var engine = try pick.engine.map(engineKind)
+        if let model = pick.model {
+            let kind = try modelEngine(ModelRef(model: model))
+            if let engine, engine != kind {
+                throw APIError(400, "`engine` is \(engine.rawValue) but model \(model) runs on \(kind.rawValue)")
+            }
+            engine = kind
+        }
         var voice = pick.voice?.trimmingCharacters(in: .whitespaces)
         if let v = voice, let colon = v.firstIndex(of: ":"),
            let kind = try? engineKind(String(v[..<colon])) {   // "edge:de-DE-KatjaNeural"
@@ -396,8 +437,32 @@ final class LocalAPI {
             engine = kind
             voice = String(v[v.index(after: colon)...])
         }
+        if let v = voice, v.hasPrefix("/") || v.hasPrefix("~") {   // a reference clip to clone (Qwen3)
+            if let engine, engine != .qwen3 { throw APIError(400, "Only qwen3 clones a voice from a file") }
+            engine = .qwen3
+            voice = (v as NSString).expandingTildeInPath
+        }
         guard language != nil || engine != nil || !(voice ?? "").isEmpty else { return nil }
-        let strict = pick.strict ?? false
+        let onDemand = engine?.isOnDemand ?? false
+        if let strict = pick.strict, let fallback = pick.fallback, strict == fallback {
+            throw APIError(400, "`strict` and `fallback` contradict each other; pass one")
+        }
+        let strict = pick.fallback.map { !$0 } ?? pick.strict ?? onDemand
+        if engine == .qwen3, let why = Qwen3ModelStore.unsupportedReason, strict {
+            throw APIError(400, "Qwen3-TTS can't run here: \(why)")
+        }
+        if let engine, !state.isInstalled(engine) {
+            if pick.install == true {
+                try await state.installModel(for: engine)
+            } else if strict {
+                throw APIError(409, engine == .qwen3 ? Qwen3Engine.notInstalledMessage
+                               : "\(engine.label) isn't installed. Pass install: true, or install it in Settings → Engines.")
+            }
+        }
+        if let voice, voice.hasPrefix("/") {
+            guard FileManager.default.fileExists(atPath: voice) else { throw APIError(400, "No reference clip at \(voice)") }
+            return VoiceChoice(language: language, route: VoiceRoute(engine: .qwen3, voiceID: voice), strict: strict)
+        }
 
         guard let voice, !voice.isEmpty else {
             return VoiceChoice(language: language, route: engine.map { VoiceRoute(engine: $0, voiceID: "") }, strict: strict)
@@ -410,7 +475,8 @@ final class LocalAPI {
         if language == nil, parts.count >= 3, parts[0].count == 2, parts[1].count == 2 {
             languages.insert(ReadingLanguage(code: "\(parts[0])-\(parts[1])"), at: 0)
         }
-        let kinds = engine.map { [$0] } ?? SpeechEngineKind.allCases
+        // On-demand engines only when asked for: "F1" alone means Supertonic's.
+        let kinds = engine.map { [$0] } ?? SpeechEngineKind.chainable
         for lang in languages {
             for kind in kinds where narrator.hasEngine(kind) {
                 let options = await narrator.voices(kind, language: lang)

@@ -128,6 +128,15 @@ final class AppState: ObservableObject {
     let history = NarrationHistory()
     let supertonic = SupertonicModelStore()
     let supertonicEngine = SupertonicEngine()
+    let qwen3 = Qwen3ModelStore()
+    /// Built-in Qwen3 voices are cloned from Supertonic's, rendered on first use.
+    lazy var qwen3Engine = Qwen3Engine { [supertonicEngine] voiceID in
+        guard supertonicEngine.unavailableReason == nil else {
+            throw SpeechEngineError.notInstalled(
+                "Built-in Qwen3 voices are cloned from Supertonic's: install Supertonic (Settings → Engines), or put your own clip in ~/Library/Application Support/Narrateify/Voices")
+        }
+        return try await supertonicEngine.synthesize(Qwen3Engine.referenceText, language: .englishUS, voiceID: voiceID).audio
+    }
     lazy var narrator: Narrator = makeNarrator()
     let shortcutStore = ShortcutStore()
     let updateChecker = UpdateChecker()
@@ -625,6 +634,8 @@ final class AppState: ObservableObject {
         let needed = narrator.isEngineNeeded(.supertonic)
         let keepWarm = settings.keepModelsWarm && needed
         supertonicEngine.idleUnloadAfter = keepWarm ? nil : TimeInterval(settings.unloadAfterMinutes * 60)
+        // On-demand models never stay warm: always the idle timeout.
+        qwen3Engine.idleUnloadAfter = TimeInterval(settings.unloadAfterMinutes * 60)
         if keepWarm, supertonic.isInstalled, !supertonicEngine.isLoaded {
             Task { try? await supertonicEngine.preload() }
         }
@@ -644,6 +655,7 @@ final class AppState: ObservableObject {
             OpenAISpeechEngine { [unowned self] in
                 .init(apiKey: openAIKey, model: openAIModel, defaultVoice: openAIVoice)
             },
+            qwen3Engine,
         ])
         narrator.onStatus = { [weak self] in self?.status = $0 }
         // Edge just went down → warm Supertonic now so later sections are fast.

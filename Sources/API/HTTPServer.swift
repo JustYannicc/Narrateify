@@ -67,7 +67,7 @@ final class HTTPServer: @unchecked Sendable {
 
         private func head(_ status: Int, _ contentType: String, _ headers: [String: String]) -> Data {
             let reason = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-                          405: "Method Not Allowed", 411: "Length Required", 413: "Payload Too Large",
+                          405: "Method Not Allowed", 409: "Conflict", 411: "Length Required", 413: "Payload Too Large",
                           500: "Internal Server Error",
                           503: "Service Unavailable"][status] ?? "Status"
             var lines = ["HTTP/1.1 \(status) \(reason)", "Content-Type: \(contentType)", "Connection: close"]

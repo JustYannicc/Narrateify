@@ -63,7 +63,7 @@ Leave the voice options out and you get exactly what the hotkey would read.
 ### CLI
 
 `narrateify` ships inside the app (`Narrateify.app/Contents/SharedSupport/narrateify`).
-`scripts/install-local.sh` symlinks it to `~/.local/bin`; otherwise run `…/narrateify install`.
+`scripts/install-local.sh` symlinks it to `~/.local/bin`; otherwise run `…/narrateify install-cli`.
 It starts the app in the background if it isn't running.
 
 ```bash
@@ -83,7 +83,9 @@ Voice options work on every command:
 | Option | What it does |
 |---|---|
 | `--voice` | Voice id or name: `de-DE-KatjaNeural`, `edge:en-US-AvaNeural`, `F1`, `Anna`. A voice pins the language. |
-| `--engine` | `edge`, `supertonic`, `apple`, `elevenLabs` or `openAI`. |
+| `--engine` | `edge`, `supertonic`, `apple`, `elevenLabs`, `openAI` or `qwen3`. |
+| `--model` | A local model from `narrateify models` (`qwen3-tts-1.7b`). Picks its engine. |
+| `--install` / `--fallback` | Download the model first if it's missing / allow falling back from an on-demand model. |
 | `--language` | Skips language detection. |
 | `--strict` | No fallback. |
 | `--speed` | 0.5–3. |
@@ -92,6 +94,36 @@ Voice options work on every command:
 Files render at 1× unless you pass `--speed`. `say` uses the app's speed.
 Text that starts with `-` goes after `--`, as in `narrateify say -- "-5 degrees"`. Unknown flags are errors.
 `-o` must be a `.wav`/`.m4a` file path. It is never a directory.
+
+### Bigger local model: Qwen3-TTS 1.7B (on demand)
+
+Supertonic handles everyday reading. For voiceovers you can ask for **Qwen3-TTS 1.7B** instead.
+It's Alibaba's model (Apache-2.0), run on MLX through [speech-swift](https://github.com/soniqo/speech-swift).
+It's slower, but it sounds noticeably more natural.
+
+- **Never in a reading chain.** It's only used when a call passes `--model qwen3-tts-1.7b` (or `--engine qwen3`, or `model` in the API/MCP).
+  Such a call is strict: if Qwen3 can't run, it fails rather than quietly using another engine. Add `--fallback` to fall back down the language's chain instead.
+- **Installed on request.** `narrateify install qwen3-tts-1.7b` downloads about 2.9 GB to `~/Library/Application Support/Narrateify/Models/`.
+  You can also download it from Settings → Engines, or add `--install` / `install: true` to a call.
+  Without it, a call fails with a clear message.
+- **Loaded on demand.** It runs in its own helper process (`narrateify-qwen3`), which takes about 2.9 GB while loaded.
+  The helper starts on the first call and takes a few seconds to load. After that it renders about twice as fast as real time: 18 s of audio took 9 s on this Mac, load included.
+  It quits after the idle timeout (Settings → Reading → "Unload after N min") or when the app quits, so nothing stays in RAM.
+- **Voices are cloned from a reference clip**, because the Base model has no preset speakers:
+  - `F1`–`M5` are cloned from the matching Supertonic voice, rendered once on first use.
+  - Any clip in `~/Library/Application Support/Narrateify/Voices/` can be used by its file name.
+  - `--voice /path/to/clip.wav` clones a clip directly.
+- **Languages:** en, de, fr, es, it, pt, ru, ja, ko, zh.
+- **Requirements:** Apple silicon and macOS 15. Building it needs the Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`.
+
+```bash
+narrateify models                                   # installed + installable, size, quality
+narrateify install qwen3-tts-1.7b
+narrateify synth --model qwen3-tts-1.7b --voice M2 "…" -o vo.wav
+narrateify batch clips.json --out-dir vo/ --model qwen3-tts-1.7b   # per-clip voice/language in clips.json
+```
+
+`model` is a general parameter, so later local models are added to the same catalog (`GET /v1/models`) and picked the same way.
 
 ### MCP
 
@@ -107,6 +139,7 @@ codex mcp add narrateify -- ~/.local/bin/narrateify mcp
 | `synthesize_batch` | Clips → `<out_dir>/<id>.wav`, returning a manifest with durations. |
 | `list_voices` | Voices you can pass as `voice`. |
 | `list_engines` | Engines and their health per language. |
+| `list_models` / `install_model` | Local models, installed and installable, plus download one. |
 | `status` | Whether it's reading, plus the current chains. |
 | `stop` | Stops reading. |
 
@@ -124,6 +157,8 @@ You can turn it off with `defaults write com.narrateify.Narrateify localAPIEnabl
 | `GET /v1/voices?engine=&language=` | Usable voices |
 | `POST /v1/speak` | `{text, voice?, engine?, language?, strict?, clean?}` |
 | `POST /v1/stop` | Stops reading |
+| `GET /v1/models` | Local models: installed, installable, size, memory, quality, on demand or not |
+| `POST /v1/models/install` / `uninstall` | `{model}`; install blocks until done (poll `/v1/models` for progress) |
 | `POST /v1/synthesize` | `{text, …voice options, speed?, format?: "wav"\|"m4a", out?, stream?, words?}` |
 
 `/v1/synthesize` replies in one of three ways:
@@ -146,7 +181,10 @@ xcodegen generate
 open Narrateify.xcodeproj   # ⌘R
 ```
 
-macOS 14+, Xcode 15+. On first use, grant **Accessibility** (to read the
+The Qwen3 helper needs MLX's Metal kernels, so install the Metal toolchain once with `xcodebuild -downloadComponent MetalToolchain`.
+Command-line builds need `-skipPackagePluginValidation -skipMacroValidation`, which `scripts/install-local.sh` passes.
+
+macOS 14+ (Qwen3 needs 15+), Xcode 15+. On first use, grant **Accessibility** (to read the
 selection) and **Screen Recording** (for OCR), then relaunch.
 
 Supertonic downloads about 220 MB of model files (about 400 MB on macOS 14) from Hugging Face the first time

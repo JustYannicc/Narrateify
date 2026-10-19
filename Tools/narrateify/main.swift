@@ -15,16 +15,25 @@ USAGE
         CLIPS.json: [{"id": "intro", "text": "…", "voice"?: …}, …]  →  JSON manifest on stdout
   narrateify voices [--engine E] [--language L] [--json]
   narrateify engines [--json]
+  narrateify models [--json]                              local models: installed, installable, size, quality
+  narrateify install MODEL                                download a model (e.g. qwen3-tts-1.7b, ~2.9 GB)
+  narrateify uninstall MODEL
   narrateify status | stop
   narrateify mcp                                          stdio MCP server
-  narrateify install [--dir DIR]                          symlink this binary into DIR (default ~/.local/bin)
+  narrateify install-cli [--dir DIR]                      symlink this binary into DIR (default ~/.local/bin)
 
 VOICE OPTIONS
   --voice V       voice id or name ("de-DE-KatjaNeural", "edge:en-US-AvaNeural", "F1", "Anna")
-  --engine E      edge | supertonic | apple | elevenLabs | openAI (tried first, chain follows)
+  --engine E      edge | supertonic | apple | elevenLabs | openAI | qwen3 (tried first, chain follows)
+  --model M       a local model from `narrateify models`, e.g. qwen3-tts-1.7b (picks its engine)
   --language L    "en", "de-DE", … (skips detection)
-  --strict        only that engine/voice, no fallback
+  --strict        only that engine/voice, no fallback (the default for on-demand models like qwen3)
+  --fallback      on-demand model: fall back down the language's chain if it can't run
+  --install       download the model first if it's missing
   --raw           skip the app's text cleanup and pronunciation rules
+
+Qwen3 voices: F1–M5 (cloned from the Supertonic voices), any clip in
+~/Library/Application Support/Narrateify/Voices by name, or --voice /path/to/clip.wav.
 
 Text comes from the arguments, or stdin when there are none (or "-"). --file PATH reads a file.
 Text starting with "-" goes after --:  narrateify say -- "-5 degrees outside"
@@ -36,8 +45,8 @@ struct Arguments {
     var flags: [String: String] = [:]
     var switches: Set<String> = []
 
-    static let valued: Set<String> = ["voice", "engine", "language", "speed", "format", "o", "out", "out-dir", "file", "dir"]
-    static let known: Set<String> = ["strict", "raw", "words", "json", "wait", "h", "help"]
+    static let valued: Set<String> = ["voice", "engine", "model", "language", "speed", "format", "o", "out", "out-dir", "file", "dir"]
+    static let known: Set<String> = ["strict", "fallback", "install", "raw", "words", "json", "wait", "h", "help"]
 
     /// Unknown flags are errors (a typo'd `--voise Anna` must not be read
     /// aloud). Everything after `--` is text, for text starting with "-".
@@ -67,12 +76,14 @@ struct Arguments {
     /// Body keys for the API from the voice options.
     func options() throws -> Operations.Options {
         var o: Operations.Options = [:]
-        for key in ["voice", "engine", "language", "format"] { if let v = flags[key] { o[key] = v } }
+        for key in ["voice", "engine", "model", "language", "format"] { if let v = flags[key] { o[key] = v } }
         if let speed = flags["speed"] {
             guard let value = Double(speed) else { throw Client.Failure(message: "--speed needs a number, got \(speed)") }
             o["speed"] = value
         }
         if switches.contains("strict") { o["strict"] = true }
+        if switches.contains("fallback") { o["fallback"] = true }
+        if switches.contains("install") { o["install"] = true }
         if switches.contains("raw") { o["clean"] = false }
         if switches.contains("words") { o["words"] = true }
         return o
@@ -96,6 +107,50 @@ func describe(_ result: [String: Any]) -> String {
     var line = "\(result["path"] ?? "?")  \(duration)  \(Array(NSOrderedSet(array: voices)).map { "\($0)" }.joined(separator: ", "))"
     if result["fell_back"] as? Bool == true { line += "  (fell back)" }
     return line
+}
+
+func describeModel(_ m: [String: Any]) -> String {
+    let gb = Double(m["download_bytes"] as? Int64 ?? Int64(m["download_bytes"] as? Int ?? 0)) / 1e9
+    var state = m["installed"] as? Bool == true ? (m["loaded"] as? Bool == true ? "installed, loaded" : "installed") : "not installed"
+    if let p = m["installing"] as? Double { state = "downloading \(Int(p * 100))%" }
+    if let why = m["unsupported"] as? String { state = "unavailable: \(why)" }
+    let tag = m["on_demand"] as? Bool == true ? "on demand" : "reading chain"
+    return "\(m["id"] ?? "")\t\(m["name"] ?? "")\t\(String(format: "%.2f GB", gb))\tquality \(m["quality"] ?? "?")/10\t\(tag)\t\(state)"
+}
+
+func modelIDs() async throws -> String {
+    ((try await Client.json("GET", "v1/models") as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
+        .joined(separator: ", ")
+}
+
+/// Starts the download and prints progress until the app says it's done.
+func installModel(_ model: String) async throws {
+    final class Outcome: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Result<Any, Error>?
+        var result: Result<Any, Error>? { lock.withLock { value } }
+        func set(_ r: Result<Any, Error>) { lock.withLock { value = r } }
+    }
+    let outcome = Outcome()
+    Task {
+        do { outcome.set(.success(try await Client.json("POST", "v1/models/install", body: ["model": model]))) }
+        catch { outcome.set(.failure(error)) }
+    }
+    var last = -1
+    while true {
+        if let result = outcome.result {
+            if last >= 0 { FileHandle.standardError.write(Data("\n".utf8)) }
+            print(describeModel(try result.get() as? [String: Any] ?? [:]))
+            return
+        }
+        if let models = try? await Client.json("GET", "v1/models") as? [[String: Any]],
+           let m = models.first(where: { $0["id"] as? String == model }),
+           let p = m["installing"] as? Double, Int(p * 100) != last {
+            last = Int(p * 100)
+            FileHandle.standardError.write(Data("\rDownloading \(model)… \(last)%".utf8))
+        }
+        try await Task.sleep(for: .milliseconds(500))
+    }
 }
 
 func run() async throws {
@@ -163,7 +218,23 @@ func run() async throws {
     case "mcp":
         await MCPServer.run()
 
+    case "models":
+        let models = try await Client.json("GET", "v1/models") as? [[String: Any]] ?? []
+        if args.switches.contains("json") { return printJSON(models) }
+        for m in models { print(describeModel(m)) }
+
     case "install":
+        guard let model = args.positional.first else {
+            throw Client.Failure(message: "install needs a model: \(try await modelIDs()). (Symlinking the CLI is install-cli.)")
+        }
+        try await installModel(model)
+
+    case "uninstall":
+        guard let model = args.positional.first else { throw Client.Failure(message: "uninstall needs a model") }
+        _ = try await Client.json("POST", "v1/models/uninstall", body: ["model": model])
+        print("Removed \(model).")
+
+    case "install-cli":
         let dir = Operations.absolute(args.flags["dir"] ?? "~/.local/bin")
         let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
         let link = (dir as NSString).appendingPathComponent("narrateify")

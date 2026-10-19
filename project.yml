@@ -17,6 +17,15 @@ packages:
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa.git
     from: 9.29.2
+  # Qwen3-TTS on MLX, for the on-demand narrateify-qwen3 helper only. No
+  # tagged releases upstream, so pinned to a reviewed commit.
+  speech-swift:
+    url: https://github.com/soniqo/speech-swift
+    revision: 3f58a58a8f867a4c87b97dbf4d6050d6a88ef665
+  # Already a speech-swift dependency; listed so the helper can cap MLX's cache.
+  mlx-swift:
+    url: https://github.com/ml-explore/mlx-swift
+    from: 0.30.0
 
 targets:
   Narrateify:
@@ -40,6 +49,25 @@ targets:
         codeSign: true
         copy:
           destination: sharedSupport
+      # Qwen3-TTS helper (macOS 15+, Apple silicon), started on demand.
+      - target: NarrateifyQwen3
+        embed: true
+        codeSign: true
+        copy:
+          destination: sharedSupport
+    postBuildScripts:
+      # SwiftPM resource bundles the helper loads from its own directory
+      # (MLX's Metal kernels, Hub's configs).
+      - name: Copy Qwen3 helper resources
+        basedOnDependencyAnalysis: false
+        script: |
+          dest="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/SharedSupport"
+          for b in mlx-swift_Cmlx swift-transformers_Hub swift-crypto_Crypto; do
+            if [ -d "$BUILT_PRODUCTS_DIR/$b.bundle" ]; then
+              rm -rf "$dest/$b.bundle"
+              cp -R "$BUILT_PRODUCTS_DIR/$b.bundle" "$dest/"
+            fi
+          done
     info:
       path: Info.plist
       properties:
@@ -73,7 +101,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.Narrateify
         PRODUCT_NAME: Narrateify
         MARKETING_VERSION: "2.0.0"
-        CURRENT_PROJECT_VERSION: "10"
+        CURRENT_PROJECT_VERSION: "11"
         # Sentry DSN for Send Feedback + crash reports. A DSN is a public client
         # key; `xcodebuild SENTRY_DSN=` overrides it, empty turns Sentry off.
         SENTRY_DSN: ""
@@ -84,6 +112,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: true
         SWIFT_VERSION: "5.0"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Narrateify-Bridging-Header.h
+        # The resource-copy script writes into the bundle.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Allow ad-hoc local builds without a development team.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
@@ -102,6 +132,29 @@ targets:
         # "narrateify" would clash with the app's module on a case-insensitive disk.
         PRODUCT_MODULE_NAME: NarrateifyCLI
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.cli
+        SWIFT_VERSION: "5.0"
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+
+  NarrateifyQwen3:
+    type: tool
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Tools/narrateify-qwen3
+    dependencies:
+      - package: speech-swift
+        product: Qwen3TTS
+      - package: mlx-swift
+        product: MLX
+    settings:
+      base:
+        PRODUCT_NAME: narrateify-qwen3
+        PRODUCT_MODULE_NAME: NarrateifyQwen3
+        PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.qwen3
+        ARCHS: arm64   # MLX is Apple silicon only
         SWIFT_VERSION: "5.0"
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Manual

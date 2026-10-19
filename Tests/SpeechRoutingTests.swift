@@ -158,3 +158,27 @@ final class NarratorTests: XCTestCase {
         XCTAssertNil(session)
     }
 }
+
+/// On-demand models (Qwen3) are only ever used when a call asks for them.
+final class OnDemandModelTests: XCTestCase {
+    @MainActor
+    func testOnDemandEnginesStayOutOfReadingChains() {
+        XCTAssertFalse(SpeechEngineKind.chainable.contains(.qwen3))
+        for code in ["en-US", "de-DE", "fr-FR"] {
+            let profile = ReadingSettings.defaultProfile(ReadingLanguage(code: code))
+            XCTAssertFalse(profile.routes.contains { $0.engine.isOnDemand }, code)
+        }
+    }
+
+    @MainActor
+    func testPinnedOnDemandRouteDoesNotDragInTheChain() async {
+        let narrator = Narrator(engines: [])
+        let strict = await narrator.profile(for: .germanDE, choice: VoiceChoice(
+            language: .germanDE, route: VoiceRoute(engine: .qwen3, voiceID: "M2"), strict: true))
+        XCTAssertEqual(strict.routes.map(\.engine), [.qwen3])
+        let loose = await narrator.profile(for: .germanDE, choice: VoiceChoice(
+            language: .germanDE, route: VoiceRoute(engine: .qwen3, voiceID: "M2"), strict: false))
+        XCTAssertEqual(loose.routes.first?.engine, .qwen3)
+        XCTAssertEqual(loose.routes.dropFirst().map(\.engine), narrator.settings.profile(for: .germanDE).routes.map(\.engine))
+    }
+}

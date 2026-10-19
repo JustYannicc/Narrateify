@@ -225,6 +225,7 @@ final class Narrator: ObservableObject {
     func benchmark(_ kind: SpeechEngineKind) async -> String {
         guard let engine = router.engine(kind) else { return "Not available" }
         if kind.isCloudPaid { return "Not measured (paid per request)" }
+        if kind.isOnDemand { return "Not measured (on-demand model)" }
         if let reason = engine.unavailableReason { return reason }
         let supertonic = engine as? SupertonicEngine
         let wasLoaded = supertonic?.isLoaded ?? true
@@ -282,6 +283,7 @@ extension SpeechEngineKind {
         case .apple: return "Apple"
         case .elevenLabs: return "ElevenLabs"
         case .openAI: return "OpenAI"
+        case .qwen3: return "Qwen3"
         }
     }
 
@@ -293,6 +295,7 @@ extension SpeechEngineKind {
         case .apple: return "Apple (built-in)"
         case .elevenLabs: return "ElevenLabs"
         case .openAI: return "OpenAI"
+        case .qwen3: return "Qwen3-TTS 1.7B (local)"
         }
     }
 }
