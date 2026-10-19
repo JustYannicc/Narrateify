@@ -65,10 +65,12 @@ final class Narrator: ObservableObject {
     // MARK: Reading
 
     /// Read `text`. Pass `language` when it's already known (translation
-    /// output) to skip detection.
-    func read(_ text: String, language: ReadingLanguage? = nil, showOverlay: Bool = true) {
+    /// output) to skip detection; `choice` pins an engine/voice (local API).
+    func read(_ text: String, language: ReadingLanguage? = nil, choice: VoiceChoice? = nil,
+              showOverlay: Bool = true) {
         let started = Date()
         stop()
+        let language = language ?? choice?.language
         let sections = ReadingPlanner.plan(text, languages: language.map { [$0] } ?? settings.languages)
         guard !sections.isEmpty else { return }
         let planned = Date()
@@ -79,7 +81,7 @@ final class Narrator: ObservableObject {
         let session = ReadingSession(sections: sections, synthesize: { [weak self] section, live in
             guard let self else { throw CancellationError() }
             let t0 = Date()
-            let result = try await self.router.synthesize(section, profile: self.settings.profile(for: section.language),
+            let result = try await self.router.synthesize(section, profile: await self.profile(for: section.language, choice: choice),
                                                           live: live)
             log.notice("section \(section.id) [\(section.language.code, privacy: .public)] → \(result.route.engine.rawValue, privacy: .public)/\(result.route.voiceID, privacy: .public) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms (t+\(Int(Date().timeIntervalSince(started) * 1000)) ms), skipped \(result.failures.map { "\($0.0.engine.rawValue): \($0.1.localizedDescription)" }.joined(separator: "; "), privacy: .public)")
             routeLog.routes[section.id] = result.route
@@ -161,6 +163,13 @@ final class Narrator: ObservableObject {
     }
 
     func isBenched(_ kind: SpeechEngineKind) -> Bool { router.isBenched(kind) }
+
+    func hasEngine(_ kind: SpeechEngineKind) -> Bool { router.engine(kind) != nil }
+
+    /// One section through the language's chain (render path).
+    func synthesize(_ section: ReadingSection, profile: LanguageProfile) async throws -> SpeechRouter.Result {
+        try await router.synthesize(section, profile: profile)
+    }
 
     /// A read is about to start: warm the engine each language would use first
     /// (Edge opens its WebSocket — ~200 ms saved off the first section).

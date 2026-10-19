@@ -55,6 +55,89 @@ rebuilt around fast engines, multilingual reading, and a section-based reader.
 | `⌃⌥=` / `⌃⌥-` | Faster / slower |
 | `⌃⌥X` | Stop |
 
+## Use it from anything: CLI, MCP, local API
+
+Every way in uses the same section planner, per-language engine chains and fallbacks as the hotkey.
+Leave the voice options out and you get exactly what the hotkey would read.
+
+### CLI
+
+`narrateify` ships inside the app (`Narrateify.app/Contents/SharedSupport/narrateify`).
+`scripts/install-local.sh` symlinks it to `~/.local/bin`; otherwise run `…/narrateify install`.
+It starts the app in the background if it isn't running.
+
+```bash
+narrateify say "Read this aloud"                 # through the reader, like ⌃⌥R
+narrateify say --wait < notes.txt                # stdin; returns when it's done talking
+narrateify synth "Hallo zusammen" -o hi.wav      # render to a file (or .m4a)
+narrateify synth -o - "Stream me" | ffplay -     # WAV stream to stdout, starts with the first section
+narrateify synth "…" -o clip.wav --json --words  # exact duration, engine/voice per section, word times
+narrateify batch clips.json --out-dir vo/        # [{"id","text",…}] → vo/<id>.wav + JSON manifest
+narrateify voices --language de                  # * = in your chain
+narrateify engines
+narrateify stop
+```
+
+Voice options work on every command:
+
+| Option | What it does |
+|---|---|
+| `--voice` | Voice id or name: `de-DE-KatjaNeural`, `edge:en-US-AvaNeural`, `F1`, `Anna`. A voice pins the language. |
+| `--engine` | `edge`, `supertonic`, `apple`, `elevenLabs` or `openAI`. |
+| `--language` | Skips language detection. |
+| `--strict` | No fallback. |
+| `--speed` | 0.5–3. |
+| `--raw` | Skips text cleanup and pronunciation rules. |
+
+Files render at 1× unless you pass `--speed`. `say` uses the app's speed.
+Text that starts with `-` goes after `--`, as in `narrateify say -- "-5 degrees"`. Unknown flags are errors.
+`-o` must be a `.wav`/`.m4a` file path. It is never a directory.
+
+### MCP
+
+```bash
+claude mcp add --scope user narrateify -- ~/.local/bin/narrateify mcp
+codex mcp add narrateify -- ~/.local/bin/narrateify mcp
+```
+
+| Tool | What it does |
+|---|---|
+| `speak` | Reads aloud through the reader, like the hotkey. |
+| `synthesize` | Text → file, returning the path, exact duration and sections, plus words if asked. |
+| `synthesize_batch` | Clips → `<out_dir>/<id>.wav`, returning a manifest with durations. |
+| `list_voices` | Voices you can pass as `voice`. |
+| `list_engines` | Engines and their health per language. |
+| `status` | Whether it's reading, plus the current chains. |
+| `stop` | Stops reading. |
+
+### Local API
+
+It runs on `http://127.0.0.1:47801`. If that port is taken, the real port is in
+`~/Library/Application Support/Narrateify/api.json`.
+It only listens on loopback. It refuses requests that carry a browser `Origin`, or a `Host` that isn't localhost, so web pages can't drive it.
+You can turn it off with `defaults write com.narrateify.Narrateify localAPIEnabled -bool false`.
+
+| Endpoint | |
+|---|---|
+| `GET /v1/status` | Version, whether it's reading, speed, each language's chain |
+| `GET /v1/engines` | Engines and their health per language |
+| `GET /v1/voices?engine=&language=` | Usable voices |
+| `POST /v1/speak` | `{text, voice?, engine?, language?, strict?, clean?}` |
+| `POST /v1/stop` | Stops reading |
+| `POST /v1/synthesize` | `{text, …voice options, speed?, format?: "wav"\|"m4a", out?, stream?, words?}` |
+
+`/v1/synthesize` replies in one of three ways:
+- With `out` (an absolute path), it writes the file and returns JSON: `path`, `duration` (read back from the file), `sections[]` (text, language, engine, voice, start, duration), `fell_back`, and `words[]` if asked.
+- Without `out`, it returns the audio bytes, with `X-Narrateify-Duration` and `X-Narrateify-Voices` headers.
+- With `stream: true`, it returns a WAV that starts as soon as the first section is ready.
+  If the client hangs up, rendering stops. If an engine fails mid-stream, the connection drops instead of ending cleanly.
+
+Output is 48 kHz mono.
+
+```bash
+curl -s localhost:47801/v1/synthesize -d '{"text":"Hi","out":"/tmp/hi.wav"}'
+```
+
 ## Build
 
 ```bash

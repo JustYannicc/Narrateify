@@ -654,18 +654,20 @@ final class AppState: ObservableObject {
 
     private var translationTask: Task<Void, Never>?
 
-    func narrate(_ text: String) {
+    /// `choice` (local API) pins engine/voice/language and skips translation;
+    /// `preprocessed` means the caller already cleaned (or chose not to).
+    func narrate(_ text: String, choice: VoiceChoice? = nil, preprocessed: Bool = false) {
         // Remember the raw text so the clipboard watcher won't repeat it, then
         // clean it (markdown/URLs/abbreviations + pronunciation rules).
         lastClipboardText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let spoken = textPreprocessor.process(text)
+        let spoken = preprocessed ? text : textPreprocessor.process(text)
         guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         audio.stop()
         translationTask?.cancel()
         translationTask = nil
 
-        guard translateEnabled else {
-            narrator.read(spoken, showOverlay: overlayEnabled)
+        guard translateEnabled, choice == nil else {
+            narrator.read(spoken, choice: choice, showOverlay: overlayEnabled)
             startNowPlaying(String(spoken.prefix(80)))
             return
         }

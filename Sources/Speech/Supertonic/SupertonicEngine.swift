@@ -203,15 +203,29 @@ final class SupertonicEngine: SpeechEngine, @unchecked Sendable {
 /// 16-bit mono PCM WAV.
 enum WAVEncoder {
     static func encode(_ samples: [Float], sampleRate: Int) -> Data {
-        let dataSize = UInt32(samples.count * 2)
-        var d = Data(capacity: 44 + Int(dataSize))
+        header(dataSize: UInt32(samples.count * 2), sampleRate: sampleRate)
+            + samples.withUnsafeBufferPointer(pcm16)
+    }
+
+    /// 16-bit mono header. `dataSize: .max` = unknown length (a stream);
+    /// players and ffmpeg read to EOF.
+    static func header(dataSize: UInt32, sampleRate: Int) -> Data {
+        var d = Data(capacity: 44)
         func put<T: FixedWidthInteger>(_ v: T) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
-        d.append(contentsOf: Array("RIFF".utf8)); put(UInt32(36) + dataSize)
+        d.append(contentsOf: Array("RIFF".utf8)); put(dataSize == .max ? UInt32.max : UInt32(36) + dataSize)
         d.append(contentsOf: Array("WAVEfmt ".utf8)); put(UInt32(16)); put(UInt16(1)); put(UInt16(1))
         put(UInt32(sampleRate)); put(UInt32(sampleRate * 2)); put(UInt16(2)); put(UInt16(16))
         d.append(contentsOf: Array("data".utf8)); put(dataSize)
-        let pcm = samples.map { Int16((max(-1, min(1, $0)) * 32767).rounded()) }
-        pcm.withUnsafeBytes { d.append(contentsOf: $0) } // Apple silicon/Intel are little-endian
+        return d
+    }
+
+    /// Clamped 16-bit little-endian PCM (Apple silicon/Intel are little-endian).
+    static func pcm16(_ samples: UnsafeBufferPointer<Float>) -> Data {
+        var d = Data(count: samples.count * 2)
+        d.withUnsafeMutableBytes { raw in
+            let out = raw.bindMemory(to: Int16.self)
+            for i in samples.indices { out[i] = Int16((max(-1, min(1, samples[i])) * 32767).rounded()) }
+        }
         return d
     }
 }

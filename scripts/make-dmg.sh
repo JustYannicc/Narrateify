@@ -85,6 +85,10 @@ if [ -n "$SIGN_ID" ]; then
     echo "    $SIGN_ID"
     # codesign can be flaky if a stray xattr lands on the bundle between the
     # clear and the sign; clear + sign + verify, retrying a couple of times.
+    # Notarization checks every Mach-O: sign the bundled CLI first (the outer
+    # sign doesn't descend into SharedSupport).
+    codesign --force --options runtime --timestamp --identifier com.narrateify.cli \
+        --sign "$SIGN_ID" "$STAGED_APP/Contents/SharedSupport/narrateify"
     signed=false
     for attempt in 1 2 3; do
         xattr -cr "$STAGED_APP"

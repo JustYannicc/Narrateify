@@ -36,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // so the first shortcut press reads immediately.
         Task { @MainActor in AppState.shared.warmUpEngines() }
 
+        // Local API for the `narrateify` CLI / MCP server / anything else.
+        Task { @MainActor in LocalAPI.shared.start() }
+
         // Crash reports + Send Feedback. After the hotkeys, so its disk I/O
         // never holds them up.
         FeedbackReporter.start()

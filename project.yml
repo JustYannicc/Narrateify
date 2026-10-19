@@ -33,6 +33,13 @@ targets:
         product: onnxruntime
       - package: Sentry
         product: Sentry
+      # The `narrateify` CLI/MCP binary ships inside the app:
+      # Narrateify.app/Contents/SharedSupport/narrateify
+      - target: NarrateifyCLI
+        embed: true
+        codeSign: true
+        copy:
+          destination: sharedSupport
     info:
       path: Info.plist
       properties:
@@ -66,7 +73,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.Narrateify
         PRODUCT_NAME: Narrateify
         MARKETING_VERSION: "2.0.0"
-        CURRENT_PROJECT_VERSION: "9"
+        CURRENT_PROJECT_VERSION: "10"
         # Sentry DSN for Send Feedback + crash reports. A DSN is a public client
         # key; `xcodebuild SENTRY_DSN=` overrides it, empty turns Sentry off.
         SENTRY_DSN: ""
@@ -78,6 +85,25 @@ targets:
         SWIFT_VERSION: "5.0"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Narrateify-Bridging-Header.h
         # Allow ad-hoc local builds without a development team.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+
+  NarrateifyCLI:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tools/narrateify
+      - path: Sources/API/APIEndpoint.swift
+    settings:
+      base:
+        PRODUCT_NAME: narrateify
+        # "narrateify" would clash with the app's module on a case-insensitive disk.
+        PRODUCT_MODULE_NAME: NarrateifyCLI
+        PRODUCT_BUNDLE_IDENTIFIER: com.narrateify.cli
+        SWIFT_VERSION: "5.0"
+        ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         DEVELOPMENT_TEAM: ""

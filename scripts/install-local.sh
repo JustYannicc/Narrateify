@@ -17,6 +17,8 @@ xcodebuild -project Narrateify.xcodeproj -scheme Narrateify -configuration Relea
   -derivedDataPath /tmp/narr-dd build -quiet
 
 app=/tmp/narr-dd/Build/Products/Release/Narrateify.app
+# --deep skips SharedSupport, so sign the bundled CLI first.
+codesign --force --options runtime --identifier com.narrateify.cli --sign "$identity" "$app/Contents/SharedSupport/narrateify"
 codesign --force --deep --options runtime --sign "$identity" "$app"
 codesign --verify --strict "$app"
 
@@ -24,4 +26,5 @@ pkill -x Narrateify 2>/dev/null && sleep 1 || true
 rm -rf /Applications/Narrateify.app
 ditto "$app" /Applications/Narrateify.app
 open /Applications/Narrateify.app
+/Applications/Narrateify.app/Contents/SharedSupport/narrateify install   # CLI → ~/.local/bin
 echo "Installed, signed with \"$identity\"."
