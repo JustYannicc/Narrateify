@@ -1,7 +1,7 @@
 import Foundation
 
 /// A language Narrateify can translate into before synthesis. Codes are the
-/// 2-letter base used by the voice-matching logic (Apple / Chatterbox), so an
+/// 2-letter base used by the language routing, so an
 /// auto-selected voice can follow the translation target.
 enum TranslationLanguage: String, CaseIterable, Identifiable {
     case english = "en", spanish = "es", french = "fr", german = "de"
@@ -63,7 +63,7 @@ struct Translator {
         var errorDescription: String? {
             switch self {
             case .missingKey:
-                return "Add your OpenAI API key in Settings → Models to use translation."
+                return "Add your OpenAI API key in Settings → Cloud to use translation."
             case .http(let code, let body):
                 let detail = body.isEmpty ? "" : " – \(body.prefix(200))"
                 return "Translation error \(code)\(detail)"

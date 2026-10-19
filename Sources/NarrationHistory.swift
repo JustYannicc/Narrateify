@@ -15,7 +15,7 @@ struct NarrationRecord: Codable, Identifiable, Hashable {
     let voiceId: String
     let voiceName: String
     let modelId: String
-    var engine: String?          // e.g. "ElevenLabs" or "Kokoro (local)"
+    var engine: String?          // e.g. "Edge TTS" or "Supertonic (local)"
     var groupId: UUID?           // which group it's filed under (nil = ungrouped)
 
     /// Short single-line preview for list rows.

@@ -33,11 +33,11 @@ struct MenuBarIcon: View {
 
     private let pulse = Timer.publish(every: 0.16, on: .main, in: .common).autoconnect()
 
-    private var active: Bool { state.isSynthesizing || state.audio.isPlaying }
+    private var active: Bool { state.isReading || state.audio.isPlaying }
 
     private var symbol: String {
         if active { return "waveform" }
-        return state.audio.hasAudio ? "waveform.circle.fill" : "waveform"
+        return (state.audio.hasAudio || state.isReading) ? "waveform.circle.fill" : "waveform"
     }
 
     var body: some View {
