@@ -16,7 +16,7 @@ USAGE
   narrateify voices [--engine E] [--language L] [--json]
   narrateify engines [--json]
   narrateify models [--json]                              local models: installed, installable, size, quality
-  narrateify install MODEL                                download a model (e.g. qwen3-tts-1.7b, ~2.9 GB)
+  narrateify install MODEL                                download a model (kokoro ~345 MB, qwen3-tts-1.7b ~2.9 GB)
   narrateify uninstall MODEL
   narrateify status | stop
   narrateify mcp                                          stdio MCP server
@@ -24,14 +24,15 @@ USAGE
 
 VOICE OPTIONS
   --voice V       voice id or name ("de-DE-KatjaNeural", "edge:en-US-AvaNeural", "F1", "Anna")
-  --engine E      edge | supertonic | apple | elevenLabs | openAI | qwen3 (tried first, chain follows)
-  --model M       a local model from `narrateify models`, e.g. qwen3-tts-1.7b (picks its engine)
+  --engine E      edge | supertonic | apple | elevenLabs | openAI | kokoro | qwen3 (tried first, chain follows)
+  --model M       a local model from `narrateify models`: kokoro, qwen3-tts-1.7b (picks its engine)
   --language L    "en", "de-DE", … (skips detection)
-  --strict        only that engine/voice, no fallback (the default for on-demand models like qwen3)
+  --strict        only that engine/voice, no fallback (the default for on-demand models: kokoro, qwen3)
   --fallback      on-demand model: fall back down the language's chain if it can't run
   --install       download the model first if it's missing
   --raw           skip the app's text cleanup and pronunciation rules
 
+Kokoro voices: af_heart (default for English), af_bella, am_michael, bf_emma, … (`narrateify voices --engine kokoro`).
 Qwen3 voices: F1–M5 (cloned from the Supertonic voices), any clip in
 ~/Library/Application Support/Narrateify/Voices by name, or --voice /path/to/clip.wav.
 

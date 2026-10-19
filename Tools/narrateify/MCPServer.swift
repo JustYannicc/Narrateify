@@ -5,10 +5,10 @@ import Foundation
 enum MCPServer {
     private static let voiceProperties: [String: Any] = [
         "voice": ["type": "string", "description": "Voice id or name from list_voices (e.g. \"de-DE-KatjaNeural\", \"F1\", \"Anna\"), or for qwen3 an absolute path to a reference clip to clone. Pins the language to the voice's."],
-        "engine": ["type": "string", "description": "edge, supertonic, apple, elevenLabs, openAI or qwen3. Tried first; the language's fallback chain follows unless strict."],
-        "model": ["type": "string", "description": "Local model id from list_models, e.g. \"qwen3-tts-1.7b\" (the bigger, higher-quality model for voiceovers). Picks its engine. On-demand models are strict unless fallback is true."],
+        "engine": ["type": "string", "description": "edge, supertonic, apple, elevenLabs, openAI, kokoro or qwen3. Tried first; the language's fallback chain follows unless strict."],
+        "model": ["type": "string", "description": "Local model id from list_models, \"kokoro\" (voice af_heart: the preferred English voiceover voice) or \"qwen3-tts-1.7b\". Picks its engine. On-demand models are strict unless fallback is true."],
         "fallback": ["type": "boolean", "description": "On-demand models: fall back down the language's chain if the model can't run."],
-        "install": ["type": "boolean", "description": "Download the model first if it isn't installed (Qwen3 is ~2.9 GB)."],
+        "install": ["type": "boolean", "description": "Download the model first if it isn't installed (Kokoro ~345 MB, Qwen3 ~2.9 GB)."],
         "language": ["type": "string", "description": "BCP-47 or base code (\"en\", \"de-DE\"). Skips language detection."],
         "strict": ["type": "boolean", "description": "Only the given engine/voice, no fallback."],
     ]

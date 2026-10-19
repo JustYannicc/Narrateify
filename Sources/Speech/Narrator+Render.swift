@@ -88,6 +88,9 @@ extension Narrator {
             let decoded = try await Task.detached(priority: .userInitiated) {
                 try SectionDecoder.decode(speech, section: section)
             }.value
+            // Kokoro ends sentences with almost no silence; the Athena voiceover
+            // put 0.28 s between them. Fed through the stretcher so order holds.
+            let gap = i < sections.count - 1 ? result.route.engine.sectionGap : 0
             let chunks = await Task.detached(priority: .userInitiated) { () -> [AVAudioPCMBuffer] in
                 var out: [AVAudioPCMBuffer] = []
                 let slice = AVAudioFrameCount(decoded.buffer.format.sampleRate / 2)
@@ -97,6 +100,12 @@ extension Narrator {
                     if let part = SectionDecoder.slice(of: decoded.buffer, from: offset, count: count),
                        let stretched = stretcher.process(part) { out.append(stretched) }
                     offset += count
+                }
+                let format = SectionDecoder.playbackFormat
+                if gap > 0, let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(gap * format.sampleRate)) {
+                    silence.frameLength = silence.frameCapacity
+                    memset(silence.floatChannelData![0], 0, Int(silence.frameLength) * MemoryLayout<Float>.size)
+                    if let stretched = stretcher.process(silence) { out.append(stretched) }
                 }
                 if i == sections.count - 1, let tail = stretcher.flush() { out.append(tail) }
                 return out
@@ -108,7 +117,7 @@ extension Narrator {
                 words: decoded.words.map {
                     WordTiming(range: $0.range, start: clock + $0.start / factor, duration: $0.duration / factor)
                 }))
-            clock += duration
+            clock += duration + gap / factor
         }
         return rendered
     }

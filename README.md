@@ -95,32 +95,46 @@ Files render at 1× unless you pass `--speed`. `say` uses the app's speed.
 Text that starts with `-` goes after `--`, as in `narrateify say -- "-5 degrees"`. Unknown flags are errors.
 `-o` must be a `.wav`/`.m4a` file path. It is never a directory.
 
-### Bigger local model: Qwen3-TTS 1.7B (on demand)
+### Voiceover models: Kokoro and Qwen3-TTS (on demand)
 
-Supertonic handles everyday reading. For voiceovers you can ask for **Qwen3-TTS 1.7B** instead.
+Supertonic handles everyday reading. For voiceovers, two bigger local models are available.
+Neither is ever part of a reading chain: they're only used when a call names one, and each runs in the bundled
+`narrateify-models` helper, one process per model.
+The helper starts on the first call and quits after the idle timeout (Settings → Reading → "Unload after N min") or when the app quits.
+A call that names one is strict: if the model can't run, the call fails rather than quietly using another engine.
+Add `--fallback` to fall back down the language's chain instead. Both need Apple silicon and macOS 15.
+
+**Kokoro v1.0 is the recommended English voiceover voice** (`--model kokoro --voice af_heart`).
+- It's the voice the Athena explainer used: the same `kokoro-v1.0.onnx` and `voices-v1.0.bin` as kokoro-onnx, run natively on ONNX Runtime, with no Python and no espeak.
+- Given the same phonemes, its output matches kokoro-onnx (0.997 waveform correlation, identical length).
+- It has 54 voices (`narrateify voices --engine kokoro`) in English (US and UK), Spanish, French, Italian, Portuguese, Hindi, Japanese and Chinese. **No German.**
+- English is phonemized the way Kokoro was trained, misaki-style: misaki's dictionaries, its `'s`/`-ed`/`-ing` rules, spelled-out acronyms (API → A-P-I) and numbers.
+  Unknown words go to a small G2P model. Fix a name with `~/Library/Application Support/Narrateify/kokoro-lexicon.json`: `{"Yannic": "jˈænɪk"}`, in misaki phonemes.
+- Rendered files put 0.28 s between sentences, like the Athena voiceover script.
+- `narrateify install kokoro` is about 345 MB. If `~/.cache/kokoro-models` already has the files, it reuses them as an APFS clone at no extra disk cost.
+- It renders about 8× faster than real time, loads in about 1 s, and takes about 0.5 GB while loaded.
+
+**Qwen3-TTS 1.7B** (`--model qwen3-tts-1.7b`) also speaks German.
 It's Alibaba's model (Apache-2.0), run on MLX through [speech-swift](https://github.com/soniqo/speech-swift).
-It's slower, but it sounds noticeably more natural.
+It sometimes changes or drops words: in tests it said "low API" for "local API" and "airgraph" for "paragraph". Check its output before you ship it.
 
-- **Never in a reading chain.** It's only used when a call passes `--model qwen3-tts-1.7b` (or `--engine qwen3`, or `model` in the API/MCP).
-  Such a call is strict: if Qwen3 can't run, it fails rather than quietly using another engine. Add `--fallback` to fall back down the language's chain instead.
 - **Installed on request.** `narrateify install qwen3-tts-1.7b` downloads about 2.9 GB to `~/Library/Application Support/Narrateify/Models/`.
   You can also download it from Settings → Engines, or add `--install` / `install: true` to a call.
   Without it, a call fails with a clear message.
-- **Loaded on demand.** It runs in its own helper process (`narrateify-qwen3`), which takes about 2.9 GB while loaded.
-  The helper starts on the first call and takes a few seconds to load. After that it renders about twice as fast as real time: 18 s of audio took 9 s on this Mac, load included.
-  It quits after the idle timeout (Settings → Reading → "Unload after N min") or when the app quits, so nothing stays in RAM.
+- **Memory and speed.** It takes about 2.9 GB while loaded and a few seconds to load. After that it renders about twice as fast as real time: 18 s of audio took 9 s on this Mac, load included.
 - **Voices are cloned from a reference clip**, because the Base model has no preset speakers:
   - `F1`–`M5` are cloned from the matching Supertonic voice, rendered once on first use.
   - Any clip in `~/Library/Application Support/Narrateify/Voices/` can be used by its file name.
   - `--voice /path/to/clip.wav` clones a clip directly.
 - **Languages:** en, de, fr, es, it, pt, ru, ja, ko, zh.
-- **Requirements:** Apple silicon and macOS 15. Building it needs the Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`.
+- **Building it** needs the Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`.
 
 ```bash
 narrateify models                                   # installed + installable, size, quality
-narrateify install qwen3-tts-1.7b
-narrateify synth --model qwen3-tts-1.7b --voice M2 "…" -o vo.wav
-narrateify batch clips.json --out-dir vo/ --model qwen3-tts-1.7b   # per-clip voice/language in clips.json
+narrateify install kokoro
+narrateify synth --model kokoro --voice af_heart "…" -o vo.wav
+narrateify batch clips.json --out-dir vo/ --model kokoro --voice af_heart   # per-clip overrides in clips.json
+narrateify synth --model qwen3-tts-1.7b --voice M2 --language de "…" -o vo-de.wav
 ```
 
 `model` is a general parameter, so later local models are added to the same catalog (`GET /v1/models`) and picked the same way.

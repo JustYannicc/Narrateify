@@ -448,14 +448,15 @@ final class LocalAPI {
             throw APIError(400, "`strict` and `fallback` contradict each other; pass one")
         }
         let strict = pick.fallback.map { !$0 } ?? pick.strict ?? onDemand
-        if engine == .qwen3, let why = Qwen3ModelStore.unsupportedReason, strict {
-            throw APIError(400, "Qwen3-TTS can't run here: \(why)")
+        if let engine, engine.isOnDemand, let why = ModelHelper.unsupportedReason, strict {
+            throw APIError(400, "\(engine.label) can't run here: \(why)")
         }
         if let engine, !state.isInstalled(engine) {
             if pick.install == true {
                 try await state.installModel(for: engine)
             } else if strict {
                 throw APIError(409, engine == .qwen3 ? Qwen3Engine.notInstalledMessage
+                               : engine == .kokoro ? KokoroEngine.notInstalledMessage
                                : "\(engine.label) isn't installed. Pass install: true, or install it in Settings → Engines.")
             }
         }

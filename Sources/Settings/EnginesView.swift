@@ -25,7 +25,12 @@ struct EnginesView: View {
                     EngineCardView(card: card, measured: measured[card.kind])
                     if card.kind == .supertonic { SupertonicControls() }
                     if card.kind == .edge { EdgeControls() }
-                    if card.kind == .qwen3 { Qwen3Controls(store: state.qwen3) }
+                    if card.kind == .qwen3 {
+                        OnDemandControls(engine: .qwen3, store: state.qwen3) { state.qwen3Engine.isLoaded }
+                    }
+                    if card.kind == .kokoro {
+                        OnDemandControls(engine: .kokoro, store: state.kokoro) { state.kokoroEngine.isLoaded }
+                    }
                 }
             }
         }
@@ -162,34 +167,37 @@ private extension SupertonicControls {
     }
 }
 
-private struct Qwen3Controls: View {
+/// Download / Remove for an on-demand model (Qwen3, Kokoro).
+private struct OnDemandControls: View {
     @EnvironmentObject var state: AppState
-    @ObservedObject var store: Qwen3ModelStore
+    let engine: SpeechEngineKind
+    @ObservedObject var store: OnDemandModelStore
+    let isLoaded: () -> Bool
 
     var body: some View {
         HStack {
-            if let why = Qwen3ModelStore.unsupportedReason {
+            if let why = ModelHelper.unsupportedReason {
                 Text(why).foregroundStyle(.secondary)
             } else {
                 switch store.state {
                 case .notInstalled:
                     Text("Not downloaded").foregroundStyle(.secondary)
                     Spacer()
-                    Button("Download (\(MemoryFootprint.format(Qwen3ModelStore.downloadSize)))") { install() }
+                    Button("Download (\(MemoryFootprint.format(store.downloadSize)))") { install() }
                 case .downloading(let progress, let message):
                     ProgressView(value: progress).frame(maxWidth: 220)
                     Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 case .installed:
                     // The helper starts and quits on its own; re-check every few seconds.
                     TimelineView(.periodic(from: .now, by: 3)) { _ in
-                        Label(state.qwen3Engine.isLoaded ? "Loaded" : "Downloaded · loads when a call asks for it",
+                        Label(isLoaded() ? "Loaded" : "Downloaded · loads when a call asks for it",
                               systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
                     Spacer()
                     Text(MemoryFootprint.format(store.diskUsage)).foregroundStyle(.secondary)
                     Button("Remove", role: .destructive) {
-                        Task { try? await state.uninstallModel(for: .qwen3) }
+                        Task { try? await state.uninstallModel(for: engine) }
                     }
                 case .failed(let message):
                     Text(message).foregroundStyle(.red).lineLimit(2)

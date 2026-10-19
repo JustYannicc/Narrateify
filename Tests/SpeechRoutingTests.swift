@@ -164,6 +164,7 @@ final class OnDemandModelTests: XCTestCase {
     @MainActor
     func testOnDemandEnginesStayOutOfReadingChains() {
         XCTAssertFalse(SpeechEngineKind.chainable.contains(.qwen3))
+        XCTAssertFalse(SpeechEngineKind.chainable.contains(.kokoro))
         for code in ["en-US", "de-DE", "fr-FR"] {
             let profile = ReadingSettings.defaultProfile(ReadingLanguage(code: code))
             XCTAssertFalse(profile.routes.contains { $0.engine.isOnDemand }, code)
@@ -182,3 +183,23 @@ final class OnDemandModelTests: XCTestCase {
         XCTAssertEqual(loose.routes.dropFirst().map(\.engine), narrator.settings.profile(for: .germanDE).routes.map(\.engine))
     }
 }
+
+final class KokoroEngineTests: XCTestCase {
+    func testVoicesFollowTheirLanguagePrefix() async {
+        let engine = KokoroEngine()
+        let american = await engine.voices(for: .englishUS).map(\.id)
+        XCTAssertTrue(american.contains("af_heart"))
+        XCTAssertLessThan(american.firstIndex(of: "af_heart")!, american.firstIndex(of: "bf_emma")!)   // US first, then UK
+        XCTAssertFalse(american.contains("ff_siwis"))
+        let german = await engine.voices(for: .germanDE)
+        XCTAssertTrue(german.isEmpty)   // Kokoro has no German
+        XCTAssertEqual(KokoroEngine.defaultVoice(for: .englishUS), "af_heart")
+        XCTAssertEqual(KokoroEngine.defaultVoice(for: ReadingLanguage(code: "fr-FR")), "ff_siwis")
+    }
+
+    func testOnlyKokoroPadsBetweenSections() {
+        XCTAssertEqual(SpeechEngineKind.kokoro.sectionGap, 0.28)
+        XCTAssertEqual(SpeechEngineKind.edge.sectionGap, 0)
+    }
+}
+

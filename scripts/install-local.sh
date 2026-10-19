@@ -14,13 +14,16 @@ identity=${NARRATEIFY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 
 
 xcodegen -q
 # Plugin/macro validation would block on an approval prompt (mlx-swift, swift-transformers).
+# This Mac's architecture only: speech-swift (the models helper) doesn't
+# compile for Intel, and a local install doesn't need a universal app.
 xcodebuild -project Narrateify.xcodeproj -scheme Narrateify -configuration Release \
-  -derivedDataPath /tmp/narr-dd -skipPackagePluginValidation -skipMacroValidation build -quiet
+  -derivedDataPath /tmp/narr-dd -skipPackagePluginValidation -skipMacroValidation \
+  ONLY_ACTIVE_ARCH=YES build -quiet
 
 app=/tmp/narr-dd/Build/Products/Release/Narrateify.app
 # --deep skips SharedSupport, so sign the bundled tools first.
 codesign --force --options runtime --identifier com.narrateify.cli --sign "$identity" "$app/Contents/SharedSupport/narrateify"
-codesign --force --options runtime --identifier com.narrateify.qwen3 --sign "$identity" "$app/Contents/SharedSupport/narrateify-qwen3"
+codesign --force --options runtime --identifier com.narrateify.models --sign "$identity" "$app/Contents/SharedSupport/narrateify-models"
 codesign --force --deep --options runtime --sign "$identity" "$app"
 codesign --verify --strict "$app"
 

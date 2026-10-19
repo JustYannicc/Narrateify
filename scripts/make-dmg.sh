@@ -90,8 +90,8 @@ if [ -n "$SIGN_ID" ]; then
     # sign doesn't descend into SharedSupport).
     codesign --force --options runtime --timestamp --identifier com.narrateify.cli \
         --sign "$SIGN_ID" "$STAGED_APP/Contents/SharedSupport/narrateify"
-    codesign --force --options runtime --timestamp --identifier com.narrateify.qwen3 \
-        --sign "$SIGN_ID" "$STAGED_APP/Contents/SharedSupport/narrateify-qwen3"
+    codesign --force --options runtime --timestamp --identifier com.narrateify.models \
+        --sign "$SIGN_ID" "$STAGED_APP/Contents/SharedSupport/narrateify-models"
     signed=false
     for attempt in 1 2 3; do
         xattr -cr "$STAGED_APP"

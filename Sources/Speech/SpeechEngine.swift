@@ -50,6 +50,7 @@ enum SpeechEngineKind: String, Codable, CaseIterable, Identifiable {
     case elevenLabs
     case openAI
     case qwen3
+    case kokoro
 
     var id: String { rawValue }
 
@@ -61,13 +62,16 @@ enum SpeechEngineKind: String, Codable, CaseIterable, Identifiable {
         case .elevenLabs: return "ElevenLabs (cloud)"
         case .openAI:     return "OpenAI (cloud)"
         case .qwen3:      return "Qwen3-TTS 1.7B (local, on demand)"
+        case .kokoro:     return "Kokoro v1.0 (local, on demand)"
         }
     }
 
-    var isLocal: Bool { self == .supertonic || self == .apple || self == .qwen3 }
+    var isLocal: Bool { self == .supertonic || self == .apple || isOnDemand }
     /// Big models used only when a call asks for them (API/CLI/MCP): never
     /// in a language's chain, loaded per use and unloaded when idle.
-    var isOnDemand: Bool { self == .qwen3 }
+    var isOnDemand: Bool { self == .qwen3 || self == .kokoro }
+    /// Silence a rendered file puts between this engine's sections.
+    var sectionGap: TimeInterval { self == .kokoro ? 0.28 : 0 }
     /// Engines a language's reading chain can use.
     static var chainable: [SpeechEngineKind] { allCases.filter { !$0.isOnDemand } }
     /// Bills per character and needs an API key.

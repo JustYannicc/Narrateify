@@ -240,7 +240,7 @@ enum VoiceNames {
             return EdgeVoice(shortName: route.voiceID, locale: locale).displayName
         case .supertonic:
             return SupertonicEngine.voices.first { $0.id == route.voiceID }?.name ?? route.voiceID
-        case .elevenLabs, .openAI, .qwen3:
+        case .elevenLabs, .openAI, .qwen3, .kokoro:
             return route.voiceID
         }
     }

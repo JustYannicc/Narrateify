@@ -33,7 +33,9 @@ struct ModelInfo: Encodable {
 @MainActor
 extension AppState {
     var models: [ModelInfo] {
-        let qwen3Progress: Double? = { if case .downloading(let p, _) = qwen3.state { return p } else { return nil } }()
+        func progress(_ store: OnDemandModelStore) -> Double? {
+            if case .downloading(let p, _) = store.state { return p } else { return nil }
+        }
         let supertonicProgress: Double? = {
             if case .downloading(let p) = supertonic.state { return p } else { return nil }
         }()
@@ -43,38 +45,51 @@ extension AppState {
                       memory: "~120 MB while loaded", quality: 7, speed: "~100–150 ms per sentence",
                       license: "OpenRAIL-M", onDemand: false, installed: supertonic.isInstalled,
                       loaded: supertonicEngine.isLoaded, unsupported: nil, installing: supertonicProgress),
+            ModelInfo(id: KokoroEngine.modelName, engine: SpeechEngineKind.kokoro.rawValue,
+                      name: "Kokoro v1.0 (82M, ONNX), voice af_heart and 53 more",
+                      languages: Array(KokoroEngine.languages).sorted(), downloadBytes: kokoro.downloadSize,
+                      memory: "~0.5 GB while loaded (own process, freed when idle)", quality: 9,
+                      speed: "~8× faster than real time, ~1 s to load",
+                      license: "Apache-2.0", onDemand: true, installed: kokoro.isInstalled,
+                      loaded: kokoroEngine.isLoaded, unsupported: ModelHelper.unsupportedReason,
+                      installing: progress(kokoro)),
             ModelInfo(id: Qwen3Engine.modelName, engine: SpeechEngineKind.qwen3.rawValue,
-                      name: "Qwen3-TTS 1.7B (8-bit, MLX)",
-                      languages: Array(Qwen3Engine.languages).sorted(), downloadBytes: Qwen3ModelStore.downloadSize,
-                      memory: "~3 GB while loaded (own process, freed when idle)", quality: 9,
-                      speed: "about real time on Apple silicon, plus a few seconds to load",
+                      name: "Qwen3-TTS 1.7B (8-bit, MLX), voices cloned from a clip",
+                      languages: Array(Qwen3Engine.languages).sorted(), downloadBytes: qwen3.downloadSize,
+                      memory: "~3 GB while loaded (own process, freed when idle)", quality: 7,
+                      speed: "about 2× faster than real time, plus a few seconds to load",
                       license: "Apache-2.0", onDemand: true, installed: qwen3.isInstalled,
-                      loaded: qwen3Engine.isLoaded, unsupported: Qwen3ModelStore.unsupportedReason,
-                      installing: qwen3Progress),
+                      loaded: qwen3Engine.isLoaded, unsupported: ModelHelper.unsupportedReason,
+                      installing: progress(qwen3)),
         ]
     }
 
-    /// `model` → its engine: a catalog id ("qwen3-tts-1.7b") or an engine name.
+    /// `model` → its engine: a catalog id ("kokoro", "qwen3-tts-1.7b"), an
+    /// alias, or a local engine's name.
     func modelEngine(_ id: String) -> SpeechEngineKind? {
         let key = id.lowercased()
+        if KokoroEngine.aliases.contains(key) { return .kokoro }
         if let model = models.first(where: { $0.id == key }) { return SpeechEngineKind(rawValue: model.engine) }
         return SpeechEngineKind.allCases.first { $0.isLocal && $0.rawValue.lowercased() == key }
     }
 
-    func isInstalled(_ engine: SpeechEngineKind) -> Bool {
+    /// The download behind an on-demand engine.
+    func modelStore(for engine: SpeechEngineKind) -> OnDemandModelStore? {
         switch engine {
-        case .supertonic: return supertonic.isInstalled
-        case .qwen3: return qwen3.isInstalled
-        default: return true
+        case .qwen3: return qwen3
+        case .kokoro: return kokoro
+        default: return nil
         }
     }
 
+    func isInstalled(_ engine: SpeechEngineKind) -> Bool {
+        if engine == .supertonic { return supertonic.isInstalled }
+        return modelStore(for: engine)?.isInstalled ?? true
+    }
+
     func installModel(for engine: SpeechEngineKind) async throws {
-        switch engine {
-        case .supertonic: try await supertonic.installAndWait()
-        case .qwen3: try await qwen3.install()
-        default: break
-        }
+        if engine == .supertonic { return try await supertonic.installAndWait() }
+        try await modelStore(for: engine)?.install()
     }
 
     func uninstallModel(for engine: SpeechEngineKind) async throws {
@@ -85,6 +100,9 @@ extension AppState {
         case .qwen3:
             qwen3Engine.unload()
             try await qwen3.uninstall()
+        case .kokoro:
+            kokoroEngine.unload()
+            try await kokoro.uninstall()
         default: break
         }
     }

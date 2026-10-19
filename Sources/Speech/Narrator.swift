@@ -284,6 +284,7 @@ extension SpeechEngineKind {
         case .elevenLabs: return "ElevenLabs"
         case .openAI: return "OpenAI"
         case .qwen3: return "Qwen3"
+        case .kokoro: return "Kokoro"
         }
     }
 
@@ -296,6 +297,7 @@ extension SpeechEngineKind {
         case .elevenLabs: return "ElevenLabs"
         case .openAI: return "OpenAI"
         case .qwen3: return "Qwen3-TTS 1.7B (local)"
+        case .kokoro: return "Kokoro v1.0 (local)"
         }
     }
 }

@@ -128,7 +128,9 @@ final class AppState: ObservableObject {
     let history = NarrationHistory()
     let supertonic = SupertonicModelStore()
     let supertonicEngine = SupertonicEngine()
-    let qwen3 = Qwen3ModelStore()
+    let qwen3 = Qwen3Engine.makeStore()
+    let kokoro = KokoroEngine.makeStore()
+    let kokoroEngine = KokoroEngine()
     /// Built-in Qwen3 voices are cloned from Supertonic's, rendered on first use.
     lazy var qwen3Engine = Qwen3Engine { [supertonicEngine] voiceID in
         guard supertonicEngine.unavailableReason == nil else {
@@ -636,6 +638,7 @@ final class AppState: ObservableObject {
         supertonicEngine.idleUnloadAfter = keepWarm ? nil : TimeInterval(settings.unloadAfterMinutes * 60)
         // On-demand models never stay warm: always the idle timeout.
         qwen3Engine.idleUnloadAfter = TimeInterval(settings.unloadAfterMinutes * 60)
+        kokoroEngine.idleUnloadAfter = TimeInterval(settings.unloadAfterMinutes * 60)
         if keepWarm, supertonic.isInstalled, !supertonicEngine.isLoaded {
             Task { try? await supertonicEngine.preload() }
         }
@@ -656,6 +659,7 @@ final class AppState: ObservableObject {
                 .init(apiKey: openAIKey, model: openAIModel, defaultVoice: openAIVoice)
             },
             qwen3Engine,
+            kokoroEngine,
         ])
         narrator.onStatus = { [weak self] in self?.status = $0 }
         // Edge just went down → warm Supertonic now so later sections are fast.
