@@ -23,6 +23,8 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel?.isVisible ?? false }
     private var hideGeneration = 0
+    /// Mouse and panel origin when the current drag started.
+    private var dragStart: (mouse: NSPoint, origin: NSPoint)?
 
     /// Build the panel and SwiftUI view graph ahead of time (at launch) so the
     /// first narration doesn't pay ~100 ms of view construction on the main
@@ -103,12 +105,25 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
         onClose?()
     }
 
+    /// Screen-space mouse delta, so moving the panel doesn't feed back into
+    /// the gesture's own (window-relative) coordinates.
+    private func drag(ended: Bool) {
+        guard let panel else { return }
+        let mouse = NSEvent.mouseLocation
+        let start = dragStart ?? (mouse, panel.frame.origin)
+        dragStart = ended ? nil : start
+        panel.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x,
+                                     y: start.origin.y + mouse.y - start.mouse.y))
+    }
+
     // MARK: Panel plumbing
 
     private func makeHostingView(for session: ReadingSession) -> NSView {
-        let hosting = NSHostingView(rootView: ReaderOverlayView(session: session) { [weak self] in
-            self?.close()
-        })
+        let hosting = FirstMouseHostingView(rootView: ReaderOverlayView(
+            session: session,
+            onClose: { [weak self] in self?.close() },
+            onDrag: { [weak self] ended in self?.drag(ended: ended) }
+        ))
         hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
         return hosting
     }
@@ -127,7 +142,6 @@ final class ReaderOverlayController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false                  // SwiftUI draws the shadow
-        panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                     .stationary, .ignoresCycle]
@@ -215,4 +229,10 @@ final class ReaderPanel: NSPanel {
         default:  return nil
         }
     }
+}
+
+/// The panel never activates the app, so without this the first click only
+/// focuses it: buttons and dragging would need a second try.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

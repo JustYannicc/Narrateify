@@ -6,6 +6,8 @@ import SwiftUI
 struct ReaderOverlayView: View {
     @ObservedObject var session: ReadingSession
     var onClose: () -> Void
+    /// Drag anywhere on the card except a button: moved / let go.
+    var onDrag: (_ ended: Bool) -> Void = { _ in }
 
     static let contentWidth: CGFloat = 340
 
@@ -28,6 +30,12 @@ struct ReaderOverlayView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
         )
+        // Buttons win over this, so it only kicks in on text and empty space.
+        // (isMovableByWindowBackground never fires: SwiftUI eats the clicks.)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .gesture(DragGesture(minimumDistance: 2)
+            .onChanged { _ in onDrag(false) }
+            .onEnded { _ in onDrag(true) })
         .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
         .padding(24)   // breathing room so the shadow isn't clipped
         .animation(.easeInOut(duration: 0.2), value: session.currentIndex)
